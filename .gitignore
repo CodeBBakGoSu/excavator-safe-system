@@ -3,6 +3,7 @@ dist/
 .DS_Store
 .frontend-bind-ip
 .sensor-udp-port
+.superpowers/
 runtime-logs/
 .vite/
 coverage/
