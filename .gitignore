@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.DS_Store
+.frontend-bind-ip
+.sensor-udp-port
+runtime-logs/
+.vite/
+coverage/
+*.log
