@@ -118,12 +118,14 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
       <SettingsModal
         applySensorBridgeUrl={runtime.applySensorBridgeUrl}
         applyWsUrl={runtime.applyWsUrl}
+        applyRtspControlUrl={runtime.applyRtspControlUrl}
         configMessage={runtime.configMessage}
         onClose={() => setSettingsOpen(false)}
         open={settingsOpen}
         popupDurationMs={runtime.popupDurationMs}
         applyRtspUrl={runtime.applyRtspUrl}
         sensorBridgeDraft={runtime.sensorBridgeDraft}
+        rtspControlDraft={runtime.rtspControlDraft}
         sensorSettingsMessage={runtime.sensorSettingsMessage}
         sensorPopupDurationMs={runtime.sensorPopupDurationMs}
         rtspStreamMessage={runtime.rtspStreamMessage}
@@ -138,6 +140,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         updateBboxVisible={runtime.updateBboxVisible}
         updateOverlayDisplayMode={runtime.updateOverlayDisplayMode}
         updateSensorBridgeDraft={runtime.updateSensorBridgeDraft}
+        updateRtspControlDraft={runtime.updateRtspControlDraft}
         updateRtspUrlDraft={runtime.updateRtspUrlDraft}
         updateWsDraft={runtime.updateWsDraft}
         wsDraft={runtime.wsDraft}

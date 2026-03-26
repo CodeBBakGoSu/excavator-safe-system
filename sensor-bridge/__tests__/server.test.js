@@ -1,7 +1,11 @@
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createAiAlertMessage,
   createBridgeMessage,
+  createBridgeHttpHandler,
+  createLogRequestHandler,
   createRtspControlHandlers,
   createSensorBridgeServer,
   saveRuntimeLogFile,
@@ -52,6 +56,64 @@ describe('createBridgeMessage', () => {
 
   it('throws on payloads that are not frontend_state snapshots', () => {
     expect(() => createBridgeMessage(Buffer.from(JSON.stringify({ type: 'sensor_event' })))).toThrow(/frontend_state/i);
+  });
+});
+
+describe('createLogRequestHandler', () => {
+  it('returns cors headers for preflight and log save responses', async () => {
+    const handler = createLogRequestHandler({ logger: { error: vi.fn() } });
+    const headers = [];
+    const response = {
+      writeHead: vi.fn((status, nextHeaders) => {
+        headers.push({ status, nextHeaders });
+      }),
+      end: vi.fn(),
+    };
+
+    await handler(
+      {
+        method: 'OPTIONS',
+        url: '/logs',
+        [Symbol.asyncIterator]: async function* () {},
+      },
+      response
+    );
+
+    expect(headers[0].nextHeaders).toMatchObject({
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Private-Network': 'true',
+    });
+
+    await handler(
+      {
+        method: 'POST',
+        url: '/logs',
+        [Symbol.asyncIterator]: async function* () {
+          yield Buffer.from(
+            JSON.stringify({
+              type: 'cctv',
+              entries: [
+                {
+                  timestamp: '2026-03-24 09:00:00',
+                  summary: 'frame received',
+                  detail: 'ok',
+                },
+              ],
+            })
+          );
+        },
+      },
+      response
+    );
+
+    expect(headers[1].nextHeaders).toMatchObject({
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Private-Network': 'true',
+    });
   });
 });
 
@@ -236,12 +298,12 @@ describe('createSensorBridgeServer', () => {
 });
 
 describe('createRtspControlHandlers', () => {
-  it('starts the RTSP HLS bridge and returns the playback url', async () => {
+  it('starts the RTSP frame bridge and returns the playback url', async () => {
     const manager = {
       start: vi.fn().mockResolvedValue({
         status: 'running',
         rtspUrl: 'rtsp://10.0.0.5/live.sdp',
-        playbackUrl: 'http://localhost:8787/hls/stream.m3u8',
+        playbackUrl: 'http://192.168.1.206:8787/rtsp/frame.jpg?session=1',
       }),
       stop: vi.fn(),
       getState: vi.fn(),
@@ -249,6 +311,9 @@ describe('createRtspControlHandlers', () => {
     const handlers = createRtspControlHandlers({ manager, logger: { error: vi.fn() } });
 
     const request = {
+      headers: {
+        host: '192.168.1.206:8787',
+      },
       method: 'POST',
       url: '/rtsp/start',
       [Symbol.asyncIterator]: async function* () {
@@ -262,14 +327,14 @@ describe('createRtspControlHandlers', () => {
 
     await handlers(request, response);
 
-    expect(manager.start).toHaveBeenCalledWith('rtsp://10.0.0.5/live.sdp', 'http://localhost:8787');
+    expect(manager.start).toHaveBeenCalledWith('rtsp://10.0.0.5/live.sdp', 'http://192.168.1.206:8787');
     expect(response.writeHead).toHaveBeenCalledWith(
       200,
       expect.objectContaining({ 'Content-Type': 'application/json; charset=utf-8' })
     );
     expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({
       status: 'running',
-      playbackUrl: 'http://localhost:8787/hls/stream.m3u8',
+      playbackUrl: 'http://192.168.1.206:8787/rtsp/frame.jpg?session=1',
     });
   });
 
@@ -296,6 +361,45 @@ describe('createRtspControlHandlers', () => {
       status: 'idle',
       playbackUrl: null,
     });
+  });
+
+  it('serves rtsp frame images even when the request has a cache-busting query string', async () => {
+    const frameDir = path.join(process.cwd(), 'runtime-rtsp');
+    await mkdir(frameDir, { recursive: true });
+    await writeFile(path.join(frameDir, 'frame.jpg'), 'fake-jpeg', 'utf8');
+
+    const response = {
+      writeHead: vi.fn(),
+      end: vi.fn(),
+    };
+
+    const handler = createBridgeHttpHandler({
+      logger: { error: vi.fn() },
+      rtspManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getState: vi.fn(),
+      },
+      rtspFrameDirUrl: new URL(`file://${frameDir}/`),
+      wsPort: 8787,
+    });
+
+    await handler(
+      {
+        method: 'GET',
+        url: '/rtsp/frame.jpg?session=99',
+      },
+      response
+    );
+
+    expect(response.writeHead).toHaveBeenCalledWith(
+      200,
+      expect.objectContaining({
+        'Content-Type': 'image/jpeg',
+      })
+    );
+
+    await rm(frameDir, { recursive: true, force: true });
   });
 });
 

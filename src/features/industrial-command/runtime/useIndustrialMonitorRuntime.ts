@@ -20,6 +20,7 @@ const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
 const MAX_STREAM_LOGS = 200;
 const WS_STORAGE_KEY = 'excavator-safe-system:cctv-poc-ws-url';
 const SENSOR_WS_STORAGE_KEY = 'excavator-safe-system:sensor-bridge-ws-url';
+const RTSP_CONTROL_API_STORAGE_KEY = 'excavator-safe-system:rtsp-control-api-url';
 const RTSP_URL_STORAGE_KEY = 'excavator-safe-system:rtsp-hls-url';
 const BBOX_VISIBLE_STORAGE_KEY = 'excavator-safe-system:bbox-visible';
 const OVERLAY_DISPLAY_MODE_STORAGE_KEY = 'excavator-safe-system:overlay-display-mode';
@@ -29,7 +30,7 @@ const FIELD_STATE_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:field-stat
 export const INDUSTRIAL_MONITOR_CHANNELS: ChannelConfig[] = [
   { id: 1, cameraKey: 'cam1', channel: 'CH-01', title: '굴착기 구역 A', sourceType: 'cctv' },
   { id: 2, cameraKey: 'cam2', channel: 'CH-02', title: '굴착기 구역 B', sourceType: 'cctv' },
-  { id: 3, cameraKey: 'rtsp', channel: 'CH-03', title: 'RTSP HLS 모니터', sourceType: 'rtsp' },
+  { id: 3, cameraKey: 'rtsp', channel: 'CH-03', title: 'RTSP 실시간 모니터', sourceType: 'rtsp' },
   { id: 4, cameraKey: 'cam3', channel: 'CH-04', title: '추가 카메라 슬롯', sourceType: 'cctv' },
 ];
 
@@ -67,7 +68,7 @@ export const EMPTY_INDUSTRIAL_MONITOR_RUNTIME: ChannelRuntimeState = {
 };
 
 export type StreamLogEntry = {
-  id: number;
+  id: string;
   timestamp: string;
   summary: string;
   detail: string;
@@ -79,8 +80,11 @@ export type OverlayDisplayMode = 'always' | 'alert' | 'risk';
 
 type SocketConnectMode = 'manual' | 'retry';
 
+let logEntrySequence = 0;
+
 function createLogId() {
-  return Date.now() + Math.floor(Math.random() * 1000);
+  logEntrySequence += 1;
+  return `log-${Date.now()}-${logEntrySequence}`;
 }
 
 function sanitizePayloadDetail(payload: Record<string, unknown>) {
@@ -99,19 +103,169 @@ function formatLogTimestamp(date = new Date()) {
   return date.toLocaleString('ko-KR', { hour12: false });
 }
 
-function getLogApiUrl(sensorBridgeUrl: string) {
-  const normalized = sensorBridgeUrl.trim();
-  if (normalized) {
-    const wsUrl = new URL(normalized);
+type LocationLike = {
+  hostname: string;
+  origin: string;
+  port: string;
+  protocol: string;
+};
+
+function isLoopbackHostname(hostname: string) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0';
+}
+
+function normalizeLoopbackUrl(url: string, locationLike?: LocationLike) {
+  if (!locationLike || isLoopbackHostname(locationLike.hostname)) {
+    return url;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    if (!isLoopbackHostname(parsedUrl.hostname)) {
+      return url;
+    }
+
+    parsedUrl.hostname = locationLike.hostname;
+    if (!parsedUrl.port) {
+      parsedUrl.port = locationLike.protocol === 'https:' ? '443' : '80';
+    }
+    return parsedUrl.toString().replace(/\/$/, '');
+  } catch {
+    return url;
+  }
+}
+
+function normalizeHttpApiBase(url: string, locationLike?: LocationLike) {
+  try {
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol === 'ws:') {
+      parsedUrl.protocol = 'http:';
+    } else if (parsedUrl.protocol === 'wss:') {
+      parsedUrl.protocol = 'https:';
+    }
+
+    return normalizeLoopbackUrl(parsedUrl.toString().replace(/\/$/, ''), locationLike);
+  } catch {
+    return normalizeLoopbackUrl(url.replace(/\/$/, ''), locationLike);
+  }
+}
+
+export function getBridgeHttpBase(
+  sensorBridgeUrl: string,
+  sensorBridgeDraft: string,
+  locationLike?: LocationLike
+) {
+  const candidate = sensorBridgeUrl.trim() || sensorBridgeDraft.trim();
+  if (candidate) {
+    const wsUrl = new URL(candidate);
     const protocol = wsUrl.protocol === 'wss:' ? 'https:' : 'http:';
-    return `${protocol}//${wsUrl.host}/logs`;
+    return `${protocol}//${wsUrl.host}`;
   }
 
-  if (typeof window !== 'undefined') {
-    return `http://${window.location.hostname}:8787/logs`;
+  if (locationLike || typeof window !== 'undefined') {
+    const currentLocation = locationLike ?? window.location;
+    const protocol = currentLocation.protocol === 'https:' ? 'https:' : 'http:';
+    return `${protocol}//${currentLocation.hostname}:8787`;
   }
 
-  return 'http://localhost:8787/logs';
+  return 'http://localhost:8787';
+}
+
+function shouldUseDevBridgeProxy(targetBase: string, locationLike?: LocationLike) {
+  if (!locationLike) return false;
+  if (locationLike.port !== '5173') return false;
+
+  try {
+    return new URL(targetBase).origin !== locationLike.origin;
+  } catch {
+    return false;
+  }
+}
+
+export function getBridgeApiUrl(
+  path: string,
+  sensorBridgeUrl: string,
+  sensorBridgeDraft: string,
+  locationLike?: LocationLike
+) {
+  const base = getBridgeHttpBase(sensorBridgeUrl, sensorBridgeDraft, locationLike);
+
+  if (shouldUseDevBridgeProxy(base, locationLike)) {
+    const params = new URLSearchParams({
+      path,
+      target: base,
+    });
+    return `/__bridge_proxy__?${params.toString()}`;
+  }
+
+  return `${base}${path}`;
+}
+
+export function normalizeRtspPlaybackUrl(playbackUrl: string, rtspControlApiBase: string) {
+  try {
+    const playback = new URL(playbackUrl);
+    if (!isLoopbackHostname(playback.hostname)) {
+      return playbackUrl;
+    }
+
+    const controlBase = new URL(rtspControlApiBase);
+    if (isLoopbackHostname(controlBase.hostname)) {
+      return playbackUrl;
+    }
+
+    playback.protocol = controlBase.protocol;
+    playback.host = controlBase.host;
+    return playback.toString();
+  } catch {
+    return playbackUrl;
+  }
+}
+
+export function getRtspPlaybackSrc(playbackUrl: string, rtspControlApiBase: string, locationLike?: LocationLike) {
+  return normalizeRtspPlaybackUrl(playbackUrl, rtspControlApiBase);
+}
+
+function formatLogFileDatePart(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatLogFileTimePart(date: Date) {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${hours}-${minutes}-${seconds}`;
+}
+
+function buildRuntimeLogFileContent(entries: StreamLogEntry[]) {
+  return entries
+    .map((entry) =>
+      [
+        `시간: ${entry.timestamp}`,
+        `요약: ${entry.summary}`,
+        '상세:',
+        entry.detail || '(상세 없음)',
+        '------------------------------------------------------------',
+      ].join('\n')
+    )
+    .join('\n\n');
+}
+
+function downloadRuntimeLogs(type: LogStreamType, entries: StreamLogEntry[], now = new Date()) {
+  const fileName = `${type}-log-${formatLogFileDatePart(now)}_${formatLogFileTimePart(now)}.txt`;
+  const content = buildRuntimeLogFileContent(entries);
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
+  return fileName;
 }
 
 function getLogTypeLabel(type: LogStreamType) {
@@ -139,6 +293,11 @@ function loadStoredRtspUrl(defaultValue = '') {
   return window.localStorage.getItem(RTSP_URL_STORAGE_KEY)?.trim() || defaultValue;
 }
 
+function loadStoredRtspControlUrl(defaultValue = '') {
+  if (typeof window === 'undefined') return defaultValue;
+  return window.localStorage.getItem(RTSP_CONTROL_API_STORAGE_KEY)?.trim() || defaultValue;
+}
+
 function loadStoredBboxVisible(defaultValue = true) {
   if (typeof window === 'undefined') return defaultValue;
   const stored = window.localStorage.getItem(BBOX_VISIBLE_STORAGE_KEY);
@@ -154,19 +313,19 @@ function loadStoredOverlayDisplayMode(defaultValue: OverlayDisplayMode = 'always
   return defaultValue;
 }
 
-function getRtspApiBase(sensorBridgeUrl: string, sensorBridgeDraft: string) {
-  const candidate = sensorBridgeUrl.trim() || sensorBridgeDraft.trim();
+export function getRtspApiBase(
+  rtspControlUrl: string,
+  rtspControlDraft: string,
+  sensorBridgeUrl: string,
+  sensorBridgeDraft: string,
+  locationLike?: LocationLike
+) {
+  const candidate = rtspControlUrl.trim() || rtspControlDraft.trim();
   if (candidate) {
-    const wsUrl = new URL(candidate);
-    const protocol = wsUrl.protocol === 'wss:' ? 'https:' : 'http:';
-    return `${protocol}//${wsUrl.host}`;
+    return normalizeHttpApiBase(candidate.replace(/\/$/, ''), locationLike);
   }
 
-  if (typeof window !== 'undefined') {
-    return `http://${window.location.hostname}:8787`;
-  }
-
-  return 'http://localhost:8787';
+  return getBridgeHttpBase(sensorBridgeUrl, sensorBridgeDraft, locationLike);
 }
 
 function loadStoredDuration(storageKey: string, defaultValue: number) {
@@ -191,6 +350,7 @@ export interface IndustrialMonitorRuntime {
   sensorBridgeUrl: string;
   sensorBridgeDraft: string;
   rtspControlUrl: string;
+  rtspControlDraft: string;
   rtspUrl: string;
   rtspUrlDraft: string;
   rtspPlaybackUrl: string | null;
@@ -216,6 +376,7 @@ export interface IndustrialMonitorRuntime {
   savingLogType: LogStreamType | null;
   updateWsDraft: (value: string) => void;
   updateSensorBridgeDraft: (value: string) => void;
+  updateRtspControlDraft: (value: string) => void;
   updateRtspUrlDraft: (value: string) => void;
   updateBboxVisible: (value: boolean) => void;
   updateOverlayDisplayMode: (value: OverlayDisplayMode) => void;
@@ -228,6 +389,7 @@ export interface IndustrialMonitorRuntime {
   disconnectSensorSocket: () => void;
   applyWsUrl: () => void;
   applySensorBridgeUrl: () => void;
+  applyRtspControlUrl: () => void;
   applyRtspUrl: () => void;
   startRtspStream: () => Promise<void>;
   stopRtspStream: () => Promise<void>;
@@ -244,6 +406,8 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [wsDraft, setWsDraft] = useState(() => loadStoredWsUrl(''));
   const [sensorBridgeUrl, setSensorBridgeUrl] = useState(() => loadStoredSensorUrl(''));
   const [sensorBridgeDraft, setSensorBridgeDraft] = useState(() => loadStoredSensorUrl(''));
+  const [rtspControlUrl, setRtspControlUrl] = useState(() => loadStoredRtspControlUrl(''));
+  const [rtspControlDraft, setRtspControlDraft] = useState(() => loadStoredRtspControlUrl(''));
   const [rtspUrl, setRtspUrl] = useState(() => loadStoredRtspUrl(''));
   const [rtspUrlDraft, setRtspUrlDraft] = useState(() => loadStoredRtspUrl(''));
   const [rtspPlaybackUrl, setRtspPlaybackUrl] = useState<string | null>(null);
@@ -273,9 +437,9 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [cctvLogs, setCctvLogs] = useState<StreamLogEntry[]>([]);
   const [logActionMessage, setLogActionMessage] = useState<string | null>(null);
   const [savingLogType, setSavingLogType] = useState<LogStreamType | null>(null);
-  const rtspControlUrl = useMemo(
-    () => getRtspApiBase(sensorBridgeUrl, sensorBridgeDraft),
-    [sensorBridgeDraft, sensorBridgeUrl]
+  const rtspControlApiBase = useMemo(
+    () => getRtspApiBase(rtspControlUrl, rtspControlDraft, sensorBridgeUrl, sensorBridgeDraft, window.location),
+    [rtspControlDraft, rtspControlUrl, sensorBridgeDraft, sensorBridgeUrl]
   );
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -322,31 +486,17 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       setLogActionMessage(null);
 
       try {
-        const response = await fetch(getLogApiUrl(sensorBridgeUrl || sensorBridgeDraft), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            type,
-            entries,
-          }),
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(typeof result.error === 'string' ? result.error : '로그 저장에 실패했습니다.');
-        }
-
-        setLogActionMessage(`${getLogTypeLabel(type)} 로그 저장 완료 · ${result.fileName} · ${result.savedPath}`);
+        const fileName = downloadRuntimeLogs(type, entries);
+        setLogActionMessage(`${getLogTypeLabel(type)} 로그 다운로드 완료 · ${fileName}`);
       } catch (error) {
         setLogActionMessage(
-          `${getLogTypeLabel(type)} 로그 저장 실패 · ${error instanceof Error ? error.message : '알 수 없는 오류'}`
+          `${getLogTypeLabel(type)} 로그 다운로드 실패 · ${error instanceof Error ? error.message : '알 수 없는 오류'}`
         );
       } finally {
         setSavingLogType(null);
       }
     },
-    [cctvLogs, sensorBridgeDraft, sensorBridgeUrl, sensorLogs]
+    [cctvLogs, sensorLogs]
   );
 
   const updateRuntime = useCallback((channelId: number, updater: (prev: ChannelRuntimeState) => ChannelRuntimeState) => {
@@ -700,6 +850,11 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setSensorSettingsMessage(null);
   }, []);
 
+  const updateRtspControlDraft = useCallback((value: string) => {
+    setRtspControlDraft(value);
+    setRtspStreamMessage(null);
+  }, []);
+
   const updateRtspUrlDraft = useCallback((value: string) => {
     setRtspUrlDraft(value);
     setRtspStreamMessage(null);
@@ -778,6 +933,16 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setRtspStreamMessage(nextUrl ? 'RTSP 주소를 저장했습니다.' : 'RTSP 주소를 비웠습니다.');
   }, [rtspUrlDraft]);
 
+  const applyRtspControlUrl = useCallback(() => {
+    const nextUrl = normalizeHttpApiBase(rtspControlDraft.trim(), typeof window !== 'undefined' ? window.location : undefined);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(RTSP_CONTROL_API_STORAGE_KEY, nextUrl);
+    }
+    setRtspControlUrl(nextUrl);
+    setRtspControlDraft(nextUrl);
+    setRtspStreamMessage(nextUrl ? 'RTSP 제어 주소를 저장했습니다.' : 'RTSP 제어 주소를 비웠습니다.');
+  }, [rtspControlDraft]);
+
   const startRtspStream = useCallback(async () => {
     const nextUrl = rtspUrlDraft.trim();
     if (!nextUrl) {
@@ -802,7 +967,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     syncRtspRuntime('starting');
 
     try {
-      const response = await fetch(`${rtspControlUrl}/rtsp/start`, {
+      const response = await fetch(`${rtspControlApiBase}/rtsp/start`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -814,7 +979,10 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         throw new Error(typeof result.error === 'string' ? result.error : 'RTSP 스트림 시작에 실패했습니다.');
       }
 
-      setRtspPlaybackUrl(typeof result.playbackUrl === 'string' ? result.playbackUrl : `${rtspControlUrl}/hls/stream.m3u8`);
+      const playbackUrl = typeof result.playbackUrl === 'string'
+        ? getRtspPlaybackSrc(result.playbackUrl, rtspControlApiBase, window.location)
+        : getRtspPlaybackSrc(`${rtspControlApiBase}/rtsp/frame.jpg`, rtspControlApiBase, window.location);
+      setRtspPlaybackUrl(playbackUrl);
       setRtspStreamStatus('running');
       setRtspStreamMessage('RTSP 스트림이 실행 중입니다.');
       updateRuntime(3, (prev) => ({ ...prev, currentImage: null }));
@@ -825,11 +993,11 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       setRtspStreamMessage(error instanceof Error ? error.message : 'RTSP 스트림 시작에 실패했습니다.');
       syncRtspRuntime('failed');
     }
-  }, [rtspControlUrl, rtspUrlDraft, syncRtspRuntime, updateRuntime]);
+  }, [rtspControlApiBase, rtspUrlDraft, syncRtspRuntime, updateRuntime]);
 
   const stopRtspStream = useCallback(async () => {
     try {
-      await fetch(`${rtspControlUrl}/rtsp/stop`, { method: 'POST' });
+      await fetch(`${rtspControlApiBase}/rtsp/stop`, { method: 'POST' });
     } catch {
       // Keep local state consistent even if the stop call fails.
     }
@@ -837,7 +1005,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setRtspStreamStatus('stopped');
     setRtspStreamMessage('RTSP 스트림을 중지했습니다.');
     syncRtspRuntime('stopped');
-  }, [rtspControlUrl, syncRtspRuntime]);
+  }, [rtspControlApiBase, syncRtspRuntime]);
 
   const openChannelPopup = useCallback((channelId: number) => {
     clearPopupTimer();
@@ -876,7 +1044,8 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     wsDraft,
     sensorBridgeUrl,
     sensorBridgeDraft,
-    rtspControlUrl,
+    rtspControlUrl: rtspControlApiBase,
+    rtspControlDraft,
     rtspUrl,
     rtspUrlDraft,
     rtspPlaybackUrl,
@@ -902,6 +1071,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     savingLogType,
     updateWsDraft,
     updateSensorBridgeDraft,
+    updateRtspControlDraft,
     updateRtspUrlDraft,
     updateBboxVisible,
     updateOverlayDisplayMode,
@@ -914,6 +1084,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     disconnectSensorSocket,
     applyWsUrl,
     applySensorBridgeUrl,
+    applyRtspControlUrl,
     applyRtspUrl,
     startRtspStream,
     stopRtspStream,

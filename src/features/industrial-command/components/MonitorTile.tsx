@@ -1,7 +1,7 @@
 import { normalizeBBoxForImage } from '../../../../cctv-poc/frameParsing';
 import type { ChannelConfig, ChannelRuntimeState, ConnectionStatus, DetectedObject } from '../../../../cctv-poc/types';
 import { CommandIcons } from './CommandIcons';
-import { RtspHlsPlayer } from './RtspHlsPlayer';
+import { RtspFramePlayer } from './RtspFramePlayer';
 
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
@@ -140,9 +140,9 @@ export function MonitorTile({
         </div>
       </div>
 
-      <div className="relative aspect-video overflow-hidden bg-background">
+        <div className="relative aspect-video overflow-hidden bg-background">
         {isRtspTile && rtspPlaybackUrl ? (
-          <RtspHlsPlayer src={rtspPlaybackUrl} title={channel.title} />
+          <RtspFramePlayer src={rtspPlaybackUrl} title={channel.title} />
         ) : runtime.currentImage ? (
           <>
             <img
@@ -179,7 +179,7 @@ export function MonitorTile({
               </p>
               <p className="text-pretty text-sm leading-6 text-on-surface-variant">
                 {isRtspTile
-                  ? rtspStreamMessage || '설정에서 RTSP 주소를 저장하고 RTSP 시작 버튼으로 HLS 스트림을 실행하세요.'
+                  ? rtspStreamMessage || '설정에서 RTSP 주소를 저장하고 RTSP 시작 버튼으로 실시간 프레임 스트림을 실행하세요.'
                   : '하단 연결 버튼으로 실시간 스트림을 시작하면 현재 프레임과 감지 오버레이가 표시됩니다.'}
               </p>
               {isRtspTile && rtspStreamStatus ? (

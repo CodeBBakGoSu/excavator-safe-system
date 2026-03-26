@@ -5,6 +5,9 @@ dist/
 .sensor-udp-port
 .superpowers/
 runtime-logs/
+runtime-hls/
+runtime-rtsp/
+.worktrees/
 .vite/
 coverage/
 *.log

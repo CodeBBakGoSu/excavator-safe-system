@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HazardModal } from '../components/HazardModal';
 
 describe('HazardModal', () => {
@@ -70,5 +70,72 @@ describe('HazardModal', () => {
 
     expect(screen.getByTestId('hazard-box-7')).toHaveAttribute('stroke', '#ff6b6b');
     expect(screen.getByTestId('hazard-box-8')).toHaveAttribute('stroke', '#4b8eff');
+  });
+
+  it('renders duplicate event labels without duplicate React keys', () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(
+      <HazardModal
+        channelLabel="CH-01"
+        channelTitle="굴착기 구역 A"
+        bboxVisible
+        onClose={() => {}}
+        overlayDisplayMode="always"
+        open
+        runtime={{
+          connectionStatus: 'connected',
+          reconnectAttempt: 0,
+          errorMessage: null,
+          currentImage: null,
+          imageNaturalSize: null,
+          alertTier: 'risk',
+          alertEligible: true,
+          incomingFps: 10,
+          lastMessageAt: null,
+          topEventFlash: false,
+          visualFrame: {
+            sourceId: 'cam1',
+            frameIndex: 1,
+            reportWallTsMs: null,
+            wsSentTsMs: null,
+            combinedKo: '작업자 위험 접근',
+            topEventKo: '경고: 작업자 접근',
+            eventsKo: ['경고: 충돌 위험 높음: 작업자-중장비 근접', '경고: 충돌 위험 높음: 작업자-중장비 근접'],
+            imageSize: [1920, 1080],
+            overlayTrackIds: [],
+            alertTier: 'risk',
+            highlight: null,
+            zoneName: '굴착기 구역 A',
+            detectedTargetLabel: '사람 (Person)',
+            estimatedDistanceText: '약 1.8m',
+            objects: [],
+          },
+          latestFrame: {
+            sourceId: 'cam1',
+            frameIndex: 1,
+            reportWallTsMs: null,
+            wsSentTsMs: null,
+            combinedKo: '작업자 위험 접근',
+            topEventKo: '경고: 작업자 접근',
+            eventsKo: ['경고: 충돌 위험 높음: 작업자-중장비 근접', '경고: 충돌 위험 높음: 작업자-중장비 근접'],
+            imageSize: [1920, 1080],
+            overlayTrackIds: [],
+            alertTier: 'risk',
+            highlight: null,
+            zoneName: '굴착기 구역 A',
+            detectedTargetLabel: '사람 (Person)',
+            estimatedDistanceText: '약 1.8m',
+            objects: [],
+          },
+        }}
+        summary="작업자 위험 접근"
+      />
+    );
+
+    expect(screen.getAllByText('경고: 충돌 위험 높음: 작업자-중장비 근접')).toHaveLength(2);
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(expect.stringContaining('same key'));
+
+    consoleErrorSpy.mockRestore();
   });
 });

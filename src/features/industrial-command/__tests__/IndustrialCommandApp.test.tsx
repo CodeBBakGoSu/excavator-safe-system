@@ -356,7 +356,7 @@ describe('IndustrialCommandApp', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '로그 보기' }));
 
-    expect(screen.getByRole('button', { name: 'CH-03 RTSP HLS 모니터' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'CH-03 RTSP 실시간 모니터' })).toBeInTheDocument();
     expect(screen.getByTestId('cctv-log-list')).toHaveClass('overflow-y-auto');
     expect(screen.getByTestId('sensor-log-list')).toHaveClass('overflow-y-auto');
     expect(screen.getByTestId('cctv-log-header')).toHaveClass('sticky');

@@ -10,6 +10,7 @@ interface SettingsModalProps {
   open: boolean;
   wsDraft: string;
   sensorBridgeDraft: string;
+  rtspControlDraft: string;
   rtspUrlDraft: string;
   rtspStreamStatus: 'idle' | 'starting' | 'running' | 'stopped' | 'failed';
   rtspStreamMessage: string | null;
@@ -22,6 +23,7 @@ interface SettingsModalProps {
   onClose: () => void;
   updateWsDraft: (value: string) => void;
   updateSensorBridgeDraft: (value: string) => void;
+  updateRtspControlDraft: (value: string) => void;
   updateRtspUrlDraft: (value: string) => void;
   updateBboxVisible: (value: boolean) => void;
   updateOverlayDisplayMode: (value: 'always' | 'alert' | 'risk') => void;
@@ -29,6 +31,7 @@ interface SettingsModalProps {
   setSensorPopupDurationMs: (value: number) => void;
   applyWsUrl: () => void;
   applySensorBridgeUrl: () => void;
+  applyRtspControlUrl: () => void;
   applyRtspUrl: () => void;
   startRtspStream: () => Promise<void>;
   stopRtspStream: () => Promise<void>;
@@ -38,6 +41,7 @@ export function SettingsModal({
   open,
   wsDraft,
   sensorBridgeDraft,
+  rtspControlDraft,
   rtspUrlDraft,
   rtspStreamStatus,
   rtspStreamMessage,
@@ -50,6 +54,7 @@ export function SettingsModal({
   onClose,
   updateWsDraft,
   updateSensorBridgeDraft,
+  updateRtspControlDraft,
   updateRtspUrlDraft,
   updateBboxVisible,
   updateOverlayDisplayMode,
@@ -57,6 +62,7 @@ export function SettingsModal({
   setSensorPopupDurationMs,
   applyWsUrl,
   applySensorBridgeUrl,
+  applyRtspControlUrl,
   applyRtspUrl,
   startRtspStream,
   stopRtspStream,
@@ -144,6 +150,18 @@ export function SettingsModal({
               spellCheck={false}
               type="text"
               value={sensorBridgeDraft}
+            />
+          </label>
+
+          <label className="space-y-2 sm:col-span-2">
+            <span className="text-sm font-medium text-on-surface">RTSP Control API URL</span>
+            <input
+              className="w-full rounded-2xl border border-outline/40 bg-background px-4 py-3 text-sm text-on-surface outline-none transition-colors placeholder:text-secondary focus:border-primary focus:ring-2 focus:ring-primary/30"
+              onChange={(event) => updateRtspControlDraft(event.target.value)}
+              placeholder="http://host:port"
+              spellCheck={false}
+              type="text"
+              value={rtspControlDraft}
             />
           </label>
 
@@ -278,6 +296,7 @@ export function SettingsModal({
               setSensorPopupDurationMs(nextFieldStateDuration);
               applyWsUrl();
               applySensorBridgeUrl();
+              applyRtspControlUrl();
               applyRtspUrl();
             }}
             type="button"

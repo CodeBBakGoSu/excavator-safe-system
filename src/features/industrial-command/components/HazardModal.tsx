@@ -166,10 +166,10 @@ export function HazardModal({
             <div className="rounded-[24px] border border-outline/30 bg-surface-high px-4 py-4">
               <p className="text-sm text-secondary">감지 이벤트</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {(frame.eventsKo.length > 0 ? frame.eventsKo : ['실시간 위험 이벤트 대기']).map((event) => (
+                {(frame.eventsKo.length > 0 ? frame.eventsKo : ['실시간 위험 이벤트 대기']).map((event, index) => (
                   <span
                     className={`rounded-full border px-3 py-1 text-xs font-medium ${getToneClassName(runtime.alertTier)}`}
-                    key={event}
+                    key={`${event}-${index}`}
                   >
                     {event}
                   </span>

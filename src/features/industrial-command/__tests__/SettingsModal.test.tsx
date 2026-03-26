@@ -89,12 +89,14 @@ function createCallbackRecorder() {
   return {
     updateWsDraft: vi.fn(),
     updateSensorBridgeDraft: vi.fn(),
+    updateRtspControlDraft: vi.fn(),
     updateRtspUrlDraft: vi.fn(),
     updateOverlayDisplayMode: vi.fn(),
     setPopupDurationMs: vi.fn(),
     setSensorPopupDurationMs: vi.fn(),
     applyWsUrl: vi.fn(),
     applySensorBridgeUrl: vi.fn(),
+    applyRtspControlUrl: vi.fn(),
     applyRtspUrl: vi.fn(),
     startRtspStream: vi.fn().mockResolvedValue(undefined),
     stopRtspStream: vi.fn().mockResolvedValue(undefined),
@@ -108,6 +110,7 @@ function SettingsWorkflowHarness({
 }) {
   const [wsDraft, setWsDraft] = useState('ws://initial-cctv');
   const [sensorBridgeDraft, setSensorBridgeDraft] = useState('ws://initial-sensor');
+  const [rtspControlDraft, setRtspControlDraft] = useState('http://initial-rtsp-control');
   const [rtspUrlDraft, setRtspUrlDraft] = useState('rtsp://initial-camera/stream');
   const [overlayDisplayMode, setOverlayDisplayMode] = useState<'always' | 'alert' | 'risk'>('always');
   const [popupDurationMs, setPopupDurationMs] = useState(2000);
@@ -118,7 +121,8 @@ function SettingsWorkflowHarness({
     wsDraft,
     sensorBridgeUrl: 'ws://saved-sensor',
     sensorBridgeDraft,
-    rtspControlUrl: 'http://localhost:8787',
+    rtspControlUrl: 'http://saved-rtsp-control',
+    rtspControlDraft,
     rtspUrl: 'rtsp://saved-camera/stream',
     rtspUrlDraft,
     rtspStreamStatus: 'idle',
@@ -159,6 +163,10 @@ function SettingsWorkflowHarness({
       recorder.updateRtspUrlDraft(value);
       setRtspUrlDraft(value);
     },
+    updateRtspControlDraft: (value: string) => {
+      recorder.updateRtspControlDraft(value);
+      setRtspControlDraft(value);
+    },
     updateBboxVisible: noop,
     updateOverlayDisplayMode: (value: 'always' | 'alert' | 'risk') => {
       recorder.updateOverlayDisplayMode(value);
@@ -179,6 +187,7 @@ function SettingsWorkflowHarness({
     disconnectSensorSocket: noop,
     applyWsUrl: recorder.applyWsUrl,
     applySensorBridgeUrl: recorder.applySensorBridgeUrl,
+    applyRtspControlUrl: recorder.applyRtspControlUrl,
     applyRtspUrl: recorder.applyRtspUrl,
     startRtspStream: recorder.startRtspStream,
     stopRtspStream: recorder.stopRtspStream,
@@ -217,6 +226,7 @@ describe('SettingsModal', () => {
     expect(screen.getByRole('dialog', { name: '설정' })).toBeInTheDocument();
     expect(screen.getByLabelText('CCTV WebSocket URL')).toHaveValue('ws://initial-cctv');
     expect(screen.getByLabelText('Sensor Bridge WebSocket URL')).toHaveValue('ws://initial-sensor');
+    expect(screen.getByLabelText('RTSP Control API URL')).toHaveValue('http://initial-rtsp-control');
     expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://initial-camera/stream');
     expect(screen.getByLabelText('BBOX 표시 여부')).toHaveValue('true');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('always');
@@ -228,6 +238,9 @@ describe('SettingsModal', () => {
     });
     fireEvent.change(screen.getByLabelText('Sensor Bridge WebSocket URL'), {
       target: { value: 'ws://localhost:8787' },
+    });
+    fireEvent.change(screen.getByLabelText('RTSP Control API URL'), {
+      target: { value: 'http://192.168.1.7:10000' },
     });
     fireEvent.change(screen.getByLabelText('RTSP URL'), {
       target: { value: 'rtsp://10.0.0.5/live.sdp' },
@@ -244,10 +257,12 @@ describe('SettingsModal', () => {
 
     expect(recorder.updateWsDraft).toHaveBeenLastCalledWith('ws://localhost:9999/frames');
     expect(recorder.updateSensorBridgeDraft).toHaveBeenLastCalledWith('ws://localhost:8787');
+    expect(recorder.updateRtspControlDraft).toHaveBeenLastCalledWith('http://192.168.1.7:10000');
     expect(recorder.updateRtspUrlDraft).toHaveBeenLastCalledWith('rtsp://10.0.0.5/live.sdp');
     expect(recorder.updateOverlayDisplayMode).toHaveBeenLastCalledWith('risk');
     expect(screen.getByLabelText('CCTV WebSocket URL')).toHaveValue('ws://localhost:9999/frames');
     expect(screen.getByLabelText('Sensor Bridge WebSocket URL')).toHaveValue('ws://localhost:8787');
+    expect(screen.getByLabelText('RTSP Control API URL')).toHaveValue('http://192.168.1.7:10000');
     expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://10.0.0.5/live.sdp');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('risk');
     expect(screen.getByLabelText('위험 팝업 시간(ms)')).toHaveValue(4500);
@@ -256,6 +271,7 @@ describe('SettingsModal', () => {
     expect(recorder.setSensorPopupDurationMs).not.toHaveBeenCalled();
     expect(recorder.applyWsUrl).not.toHaveBeenCalled();
     expect(recorder.applySensorBridgeUrl).not.toHaveBeenCalled();
+    expect(recorder.applyRtspControlUrl).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: '적용' }));
 
@@ -263,6 +279,7 @@ describe('SettingsModal', () => {
     expect(recorder.setSensorPopupDurationMs).toHaveBeenCalledWith(6200);
     expect(recorder.applyWsUrl).toHaveBeenCalledOnce();
     expect(recorder.applySensorBridgeUrl).toHaveBeenCalledOnce();
+    expect(recorder.applyRtspControlUrl).toHaveBeenCalledOnce();
     expect(recorder.applyRtspUrl).toHaveBeenCalledOnce();
     expect(recorder.startRtspStream).not.toHaveBeenCalled();
 
@@ -284,6 +301,9 @@ describe('SettingsModal', () => {
     fireEvent.change(screen.getByLabelText('Sensor Bridge WebSocket URL'), {
       target: { value: 'ws://localhost:8787' },
     });
+    fireEvent.change(screen.getByLabelText('RTSP Control API URL'), {
+      target: { value: 'http://192.168.1.7:10000' },
+    });
     fireEvent.change(screen.getByLabelText('위험 팝업 시간(ms)'), {
       target: { value: '4500' },
     });
@@ -299,5 +319,6 @@ describe('SettingsModal', () => {
 
     expect(window.localStorage.getItem('excavator-safe-system:hazard-popup-duration-ms')).toBe('4500');
     expect(window.localStorage.getItem('excavator-safe-system:field-state-popup-duration-ms')).toBe('6200');
+    expect(window.localStorage.getItem('excavator-safe-system:rtsp-control-api-url')).toBe('http://192.168.1.7:10000');
   });
 });

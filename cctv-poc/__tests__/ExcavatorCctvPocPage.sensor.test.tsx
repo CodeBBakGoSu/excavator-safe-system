@@ -307,15 +307,25 @@ describe('IndustrialCommandApp sensor flow', () => {
     expect(MockWebSocket.instances).toHaveLength(2);
   });
 
-  it('shows sensor logs in a modal and saves them through the bridge server after a frontend_state payload arrives', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        fileName: 'sensor-log-2026-03-24_00-41-12.txt',
-        savedPath: 'runtime-logs/sensor-log-2026-03-24_00-41-12.txt',
-      }),
+  it('shows sensor logs in a modal and downloads them locally after a frontend_state payload arrives', async () => {
+    const clickMock = vi.fn();
+    const createObjectUrlMock = vi.fn(() => 'blob:test-download');
+    const revokeObjectUrlMock = vi.fn();
+    const appendSpy = vi.spyOn(document.body, 'append');
+    const originalCreateElement = document.createElement.bind(document);
+    const createElementSpy = vi.spyOn(document, 'createElement').mockImplementation((tagName: string) => {
+      if (tagName === 'a') {
+        return {
+          click: clickMock,
+          download: '',
+          href: '',
+          remove: vi.fn(),
+        } as unknown as HTMLAnchorElement;
+      }
+      return originalCreateElement(tagName);
     });
-    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(createObjectUrlMock);
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(revokeObjectUrlMock);
 
     render(<App />);
 
@@ -356,9 +366,12 @@ describe('IndustrialCommandApp sensor flow', () => {
       await Promise.resolve();
     });
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8787/logs');
-    expect(screen.getByText(/sensor-log-2026-03-24_00-41-12\.txt/)).toBeInTheDocument();
+    expect(createObjectUrlMock).toHaveBeenCalledOnce();
+    expect(clickMock).toHaveBeenCalledOnce();
+    expect(appendSpy).toHaveBeenCalled();
+    expect(screen.getByText(/센서 로그 다운로드 완료 · sensor-log-/)).toBeInTheDocument();
+
+    createElementSpy.mockRestore();
   });
 
   it('shows CCTV logs in a modal after a frame payload arrives', () => {

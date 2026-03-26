@@ -1,12 +1,11 @@
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import http from 'node:http';
 import dgram from 'node:dgram';
 import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 
 const LOG_DIR_URL = new URL('../runtime-logs/', import.meta.url);
-const HLS_DIR_URL = new URL('../runtime-hls/', import.meta.url);
+const RTSP_FRAME_DIR_URL = new URL('../runtime-rtsp/', import.meta.url);
 const AI_ALERT_LEVEL_PRIORITY = {
   INFO: 1,
   SAFE: 1,
@@ -86,6 +85,15 @@ function ensureLogEntries(value) {
   });
 }
 
+function getCorsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Private-Network': 'true',
+  };
+}
+
 function toHttpUrl(url) {
   const parsed = new URL(url);
   if (parsed.protocol === 'wss:') parsed.protocol = 'https:';
@@ -146,9 +154,7 @@ export async function saveRuntimeLogFile({
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    ...getCorsHeaders(),
   });
   response.end(JSON.stringify(payload));
 }
@@ -156,7 +162,7 @@ function sendJson(response, statusCode, payload) {
 function sendText(response, statusCode, body, contentType) {
   response.writeHead(statusCode, {
     'Content-Type': contentType,
-    'Access-Control-Allow-Origin': '*',
+    ...getCorsHeaders(),
   });
   response.end(body);
 }
@@ -175,9 +181,7 @@ export function createLogRequestHandler({ logger = console } = {}) {
   return async function handleRequest(request, response) {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        ...getCorsHeaders(),
       });
       response.end();
       return;
@@ -408,7 +412,7 @@ export function createTelegramAlertSender({ fetchImpl = fetch } = {}) {
 }
 
 export function createRtspStreamManager({
-  hlsDirUrl = HLS_DIR_URL,
+  hlsDirUrl = RTSP_FRAME_DIR_URL,
   spawnImpl = spawn,
   mkdirImpl = mkdir,
   rmImpl = rm,
@@ -421,6 +425,7 @@ export function createRtspStreamManager({
     playbackUrl: null,
     error: null,
   };
+  let sessionId = 0;
 
   async function cleanup() {
     await rmImpl(hlsDirUrl, { recursive: true, force: true }).catch(() => {});
@@ -440,27 +445,25 @@ export function createRtspStreamManager({
       }
 
       await cleanup();
+      sessionId += 1;
 
-      const playlistPath = new URL('stream.m3u8', hlsDirUrl);
+      const framePath = new URL('frame.jpg', hlsDirUrl);
       const ffmpegArgs = [
         '-rtsp_transport',
         'tcp',
         '-i',
         safeRtspUrl,
         '-an',
-        '-c:v',
-        'copy',
-        '-f',
-        'hls',
-        '-hls_time',
-        '1',
-        '-hls_list_size',
+        '-vf',
+        'fps=10',
+        '-q:v',
         '5',
-        '-hls_flags',
-        'delete_segments+append_list',
-        '-hls_segment_filename',
-        path.join(new URL('.', playlistPath).pathname, 'segment-%03d.ts'),
-        playlistPath.pathname,
+        '-update',
+        '1',
+        '-y',
+        '-f',
+        'image2',
+        framePath.pathname,
       ];
 
       const child = spawnImpl('ffmpeg', ffmpegArgs, {
@@ -471,7 +474,7 @@ export function createRtspStreamManager({
       state = {
         status: 'running',
         rtspUrl: safeRtspUrl,
-        playbackUrl: `${playbackBaseUrl}/hls/stream.m3u8`,
+        playbackUrl: `${playbackBaseUrl}/rtsp/frame.jpg?session=${sessionId}`,
         error: null,
       };
 
@@ -517,6 +520,17 @@ export function createRtspStreamManager({
   };
 }
 
+function getRequestBaseUrl(request, fallbackBaseUrl) {
+  const host = request.headers?.host;
+  if (!host) {
+    return fallbackBaseUrl;
+  }
+
+  const protocolHeader = request.headers?.['x-forwarded-proto'];
+  const protocol = typeof protocolHeader === 'string' && protocolHeader ? protocolHeader : 'http';
+  return `${protocol}://${host}`;
+}
+
 export function createRtspControlHandlers({ manager, logger = console, baseUrl = 'http://localhost:8787' } = {}) {
   return async function handleRtspRequest(request, response) {
     try {
@@ -532,7 +546,7 @@ export function createRtspControlHandlers({ manager, logger = console, baseUrl =
 
       if (request.method === 'POST' && request.url === '/rtsp/start') {
         const payload = await readRequestJson(request);
-        const result = await manager.start(payload.rtspUrl, baseUrl);
+        const result = await manager.start(payload.rtspUrl, getRequestBaseUrl(request, baseUrl));
         sendJson(response, 200, result);
         return;
       }
@@ -558,26 +572,18 @@ export function createRtspControlHandlers({ manager, logger = console, baseUrl =
   };
 }
 
-export function createBridgeHttpHandler({ logger = console, rtspManager, wsPort = 8787 } = {}) {
+export function createBridgeHttpHandler({ logger = console, rtspManager, wsPort = 8787, rtspFrameDirUrl = RTSP_FRAME_DIR_URL } = {}) {
   const logHandler = createLogRequestHandler({ logger });
   const baseUrl = `http://localhost:${wsPort}`;
   const rtspHandler = createRtspControlHandlers({ manager: rtspManager, logger, baseUrl });
 
   return async function handleHttpRequest(request, response) {
-    const requestUrl = request.url || '/';
-    if (requestUrl === '/logs' || requestUrl.startsWith('/rtsp/')) {
-      if (requestUrl === '/logs') {
-        await logHandler(request, response);
-        return;
-      }
+    const rawRequestUrl = request.url || '/';
+    const parsedRequestUrl = new URL(rawRequestUrl, 'http://localhost');
+    const requestPath = parsedRequestUrl.pathname;
 
-      await rtspHandler(request, response);
-      return;
-    }
-
-    if (request.method === 'GET' && requestUrl.startsWith('/hls/')) {
-      const relativePath = requestUrl.replace(/^\/hls\//, '');
-      const fileUrl = new URL(relativePath, HLS_DIR_URL);
+    if (request.method === 'GET' && requestPath === '/rtsp/frame.jpg') {
+      const fileUrl = new URL('frame.jpg', rtspFrameDirUrl);
 
       try {
         const info = await stat(fileUrl);
@@ -586,13 +592,20 @@ export function createBridgeHttpHandler({ logger = console, rtspManager, wsPort 
           return;
         }
         const content = await readFile(fileUrl);
-        const contentType = requestUrl.endsWith('.m3u8')
-          ? 'application/vnd.apple.mpegurl'
-          : 'video/mp2t';
-        sendText(response, 200, content, contentType);
+        sendText(response, 200, content, 'image/jpeg');
       } catch {
         sendJson(response, 404, { error: 'not_found' });
       }
+      return;
+    }
+
+    if (requestPath === '/logs' || requestPath.startsWith('/rtsp/')) {
+      if (requestPath === '/logs') {
+        await logHandler(request, response);
+        return;
+      }
+
+      await rtspHandler(request, response);
       return;
     }
 
