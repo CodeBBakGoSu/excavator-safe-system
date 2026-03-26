@@ -494,10 +494,17 @@ export function attachLightControlWebSocketServer({
   });
 
   webSocketServer.on('connection', (client) => {
+    const remoteAddress = client._socket?.remoteAddress || 'unknown';
+    logger.info(`light control websocket connected from ${remoteAddress}`);
+
     client.on('message', async (raw) => {
       try {
+        logger.info(`light control websocket message received (${String(raw).length} bytes)`);
         const payload = JSON.parse(String(raw));
         const result = await lightControlBridge.relay(payload);
+        logger.info(
+          `light control websocket message processed: command=${result.command}, delivered=${result.delivered}, deduplicated=${result.deduplicated}`
+        );
         client.send(JSON.stringify({ ok: true, ...result }));
       } catch (error) {
         logger.error('light control websocket request failed', error);

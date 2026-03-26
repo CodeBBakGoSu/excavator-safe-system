@@ -1150,9 +1150,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
 
     const socket = new WebSocket(getLightControlWsUrl(rtspControlApiBase));
     socket.onopen = () => {
+      appendSensorLog('경광등 제어 WebSocket 연결 성공', `연결 주소: ${socket.url}`);
       flushLightControlQueue();
     };
+    socket.onmessage = (event) => {
+      appendSensorLog('경광등 제어 WebSocket 응답 수신', `수신 데이터: ${String(event.data)}`);
+    };
     socket.onclose = () => {
+      appendSensorLog('경광등 제어 WebSocket 종료', `연결 종료: ${socket.url}`);
       if (lightControlWsRef.current === socket) {
         lightControlWsRef.current = null;
       }
