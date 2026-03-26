@@ -39,6 +39,33 @@ describe('parseFramePayload', () => {
     expect(frame.detectedTargetLabel).toBe('사람 (Person)');
     expect(frame.estimatedDistanceText).toBe('약 2.5m');
   });
+
+  it('prefers event-group relations over top-level relations for red relation highlighting', () => {
+    const { frame } = parseFramePayload({
+      source_id: 'cam1',
+      objects: [
+        { track_id: 323, label: 'person', bbox_xyxy: [10, 10, 20, 20] },
+        { track_id: 325, label: 'person', bbox_xyxy: [30, 30, 40, 40] },
+        { track_id: 314, label: 'machinery', bbox_xyxy: [50, 50, 60, 60] },
+        { track_id: 326, label: 'machinery', bbox_xyxy: [70, 70, 80, 80] },
+      ],
+      relations: [
+        { a_id: 325, b_id: 314 },
+        { a_id: 325, b_id: 326 },
+      ],
+      event_object_groups: [
+        {
+          event: { level: 'WARNING', message_ko: '주의: 접근 경고' },
+          track_ids: [325, 326],
+          relations: [{ a_id: 325, b_id: 326 }],
+        },
+      ],
+    });
+
+    expect(frame.alertTier).toBe('caution');
+    expect(frame.overlayTrackIds).toEqual(expect.arrayContaining([314, 325, 326]));
+    expect(frame.relationTrackIds).toEqual([325, 326]);
+  });
 });
 
 describe('extractJsonPayloadsFromText', () => {

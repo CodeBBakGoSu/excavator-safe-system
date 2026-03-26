@@ -1,8 +1,11 @@
-# Sensor UDP Bridge
+# Sensor Bridge API
 
-센서 시스템이 보내는 UDP JSON 패킷을 브라우저가 구독할 수 있는 WebSocket으로 중계하는 작은 브리지입니다.
+로컬 브리지는 더 이상 센서/AI UDP를 수신하지 않습니다.
 
-추가로 AI 서버가 보내는 UDP 이벤트를 별도 포트에서 받아, `RISK` 이상일 때만 텔레그램 채팅방으로 알림을 보낼 수 있습니다.
+현재 역할은 아래 두 가지입니다.
+
+- 프런트에서 릴레이한 센서 위험 스냅샷과 CCTV `RISK` 이벤트를 텔레그램으로 전송
+- RTSP 제어 및 프레임 이미지 제공
 
 ## Run
 
@@ -10,7 +13,7 @@
 pnpm sensor:bridge
 ```
 
-프론트와 브리지를 같이 띄우려면 프로젝트 루트에서 아래 둘 중 하나를 실행하면 됩니다.
+프런트와 브리지를 같이 띄우려면 프로젝트 루트에서 아래 둘 중 하나를 실행하면 됩니다.
 
 ```bash
 bash ./start.sh
@@ -20,77 +23,37 @@ bash ./start.sh
 pnpm dev:all
 ```
 
-환경변수로 포트를 바꿀 수 있습니다.
+환경변수 예시:
 
 ```bash
-SENSOR_UDP_HOST=0.0.0.0
-SENSOR_UDP_PORT=9500
-AI_UDP_HOST=0.0.0.0
-AI_UDP_PORT=9600
 SENSOR_BRIDGE_WS_PORT=8787
 TELEGRAM_BOT_TOKEN=123456:abcde
 TELEGRAM_CHAT_ID=-1001234567890
+SENSOR_ALERT_COOLDOWN_MS=30000
 pnpm sensor:bridge
 ```
 
-## Expected UDP payload
+## Telegram Relay APIs
 
-```json
-{
-  "type": "frontend_state",
-  "timestamp": "2026-03-22T20:30:15.120+09:00",
-  "system": {
-    "sensor_server_online": true,
-    "zone_rule": {
-      "caution_distance_m": 5,
-      "danger_distance_m": 3
-    }
-  },
-  "workers": [
-    {
-      "tag_id": 1,
-      "name": "worker_1",
-      "approved": false,
-      "connected": true,
-      "x": 1.25,
-      "y": -0.85,
-      "distance_m": 1.51,
-      "zone_status": "danger",
-      "is_warning": true,
-      "is_emergency": true,
-      "last_update": "2026-03-22T20:30:15.080+09:00"
-    }
-  ],
-  "workers_note": "workers 배열에는 여러 작업자가 들어올 수 있습니다."
-}
-```
+브리지는 프런트가 보낸 JSON payload를 받아 텔레그램 전송만 담당합니다.
 
-브리지는 유효한 `frontend_state` payload만 WebSocket 클라이언트에 그대로 브로드캐스트합니다.
+- `POST /telegram/alerts/sensor`
+  센서 WebSocket에서 받은 원본 `frontend_state` payload 전달
+- `POST /telegram/alerts/cctv`
+  CCTV WebSocket에서 받은 원본 프레임 payload 전달
 
-## AI UDP alert payload
+센서 위험 알림은 기본적으로 30초 쿨다운(`SENSOR_ALERT_COOLDOWN_MS`)을 적용합니다.
+CCTV 알림은 전달된 이벤트가 `RISK` 이상일 때만 전송합니다.
 
-AI 이벤트는 센서 브로드캐스트와 별도 UDP 포트로 받습니다. 브리지는 `event_object_groups[].event.level` 중 최고값을 기준으로 `RISK` 이상일 때만 텔레그램으로 알림을 보냅니다.
+## Settings APIs
 
-전송 메시지에는 아래 정보가 포함됩니다.
+- `GET /telegram/settings`
+- `POST /telegram/settings`
+- `POST /telegram/settings/recommended`
+- `POST /telegram/chats/sync`
 
-- `sourceID`
-- 최고 위험도
-- `top_event_ko` 또는 `combined_ko`
-- 사람 수 / 중장비 수
-- `image_jpeg_base64` 가 있으면 JPEG 이미지 첨부
+텔레그램은 공식적으로 봇 없이 서버가 임의 채팅방에 바로 쓰는 방식을 제공하지 않으므로, 봇 토큰과 대상 `chat_id` 가 필요합니다.
+`TELEGRAM_CHAT_ID` 는 하나만 넣어도 되고, `-100123,-100456` 처럼 여러 개를 쉼표로 넣어도 됩니다.
+`TELEGRAM_CHAT_ID` 를 비워 두더라도, 사용자가 봇과 대화를 시작하거나 그룹에 봇을 추가한 뒤 메시지를 1개 보내면 브리지가 `getUpdates` 로 `chat_id` 를 자동 수집합니다.
 
-예시 실행:
-
-```bash
-SENSOR_UDP_PORT=9500 \
-AI_UDP_PORT=9600 \
-TELEGRAM_BOT_TOKEN=123456:abcde \
-TELEGRAM_CHAT_ID=-1001234567890 \
-pnpm sensor:bridge
-```
-
-주의사항:
-
-- UDP 발신 측은 반드시 브리지 서버의 실제 내부망 IP와 포트를 목적지로 사용해야 합니다. 예: `192.168.0.20:9600`
-- 브리지는 수신 서버이므로 `0.0.0.0:9600` 으로 바인딩해 둘 수 있습니다.
-- 텔레그램은 공식적으로 봇 없이 서버가 임의 채팅방에 바로 쓰는 방식을 제공하지 않으므로, 봇 토큰과 대상 `chat_id` 가 필요합니다.
+웹 UI에서는 Bot Token 저장, 채팅방 동기화, 알림 대상 선택, 추천 설정 적용을 할 수 있습니다.

@@ -21,6 +21,6 @@ pnpm dev:all
 - `pnpm dev:all`: 프런트엔드와 센서 브리지 동시 실행
 - `pnpm build`: 타입 검사 후 프로덕션 빌드
 - `pnpm test`: 테스트 실행
-- `pnpm sensor:bridge`: UDP to WebSocket 센서 브리지 실행
+- `pnpm sensor:bridge`: 텔레그램/RTSP 제어용 로컬 브리지 API 실행
 
 센서 브리지 상세 설명은 [sensor-bridge/README.md](./sensor-bridge/README.md) 를 참고하세요.

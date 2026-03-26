@@ -3,14 +3,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT_STATE_FILE="${ROOT_DIR}/.sensor-udp-port"
 IP_STATE_FILE="${ROOT_DIR}/.frontend-bind-ip"
 FRONTEND_PID=""
 BRIDGE_PID=""
 VITE_PORT="${VITE_PORT:-5173}"
 BRIDGE_WS_PORT="${SENSOR_BRIDGE_WS_PORT:-8787}"
-DEFAULT_UDP_PORT="${SENSOR_UDP_PORT:-9500}"
-AI_UDP_PORT="${AI_UDP_PORT:-9600}"
 
 detect_primary_ip() {
   if command -v hostname >/dev/null 2>&1; then
@@ -56,59 +53,12 @@ read_saved_ip() {
   detect_primary_ip
 }
 
-read_saved_udp_port() {
-  if [[ -f "${PORT_STATE_FILE}" ]]; then
-    local saved_port
-    saved_port="$(tr -d '[:space:]' < "${PORT_STATE_FILE}")"
-    if [[ "${saved_port}" =~ ^[0-9]+$ ]] && (( saved_port > 0 && saved_port < 65536 )); then
-      echo "${saved_port}"
-      return
-    fi
-  fi
-
-  echo "${DEFAULT_UDP_PORT}"
-}
-
 prompt_line() {
   printf '%s\n' "$*" >&2
 }
 
 prompt_text() {
   printf '%s' "$*" >&2
-}
-
-choose_udp_port() {
-  local recent_port="$1"
-
-  if [[ ! -t 0 ]]; then
-    echo "${recent_port}"
-    return
-  fi
-
-  prompt_line "[start] UDP 리스닝 포트를 정합니다."
-  prompt_line "[start] Android 보드가 보내는 UDP 데이터를 센서 브리지가 이 포트에서 받습니다."
-  prompt_line "  1) 최근 포트 사용 (${recent_port})"
-  prompt_line "  2) 새 포트 입력"
-  prompt_text "[start] UDP 선택 (기본값 1): "
-
-  local choice=""
-  read -r choice || true
-  choice="${choice:-1}"
-
-  if [[ "${choice}" == "2" ]]; then
-    while true; do
-      prompt_text "[start] 새 UDP 포트 입력: "
-      local new_port=""
-      read -r new_port || true
-      if [[ "${new_port}" =~ ^[0-9]+$ ]] && (( new_port > 0 && new_port < 65536 )); then
-        echo "${new_port}"
-        return
-      fi
-      prompt_line "[start] 1~65535 사이 숫자를 입력해주세요."
-    done
-  fi
-
-  echo "${recent_port}"
 }
 
 choose_bind_ip() {
@@ -179,21 +129,15 @@ fi
 
 cd "${ROOT_DIR}"
 
-RECENT_UDP_PORT="$(read_saved_udp_port)"
-SELECTED_UDP_PORT="$(choose_udp_port "${RECENT_UDP_PORT}")"
-printf '%s\n' "${SELECTED_UDP_PORT}" > "${PORT_STATE_FILE}"
-
 AUTO_IP="$(detect_primary_ip)"
 RECENT_IP="$(read_saved_ip)"
 BIND_IP="${VITE_HOST:-$(choose_bind_ip "${RECENT_IP}" "${AUTO_IP}")}"
 printf '%s\n' "${BIND_IP}" > "${IP_STATE_FILE}"
 
-echo "[start] using UDP port ${SELECTED_UDP_PORT}"
-echo "[start] using AI UDP port ${AI_UDP_PORT}"
 echo "[start] binding frontend host ${BIND_IP}"
 
 echo "[start] starting sensor bridge..."
-SENSOR_UDP_PORT="${SELECTED_UDP_PORT}" AI_UDP_PORT="${AI_UDP_PORT}" pnpm sensor:bridge &
+pnpm sensor:bridge &
 BRIDGE_PID=$!
 
 echo "[start] starting frontend dev server..."
@@ -202,9 +146,7 @@ FRONTEND_PID=$!
 
 echo "[start] frontend pid=${FRONTEND_PID}, bridge pid=${BRIDGE_PID}"
 echo "[start] app:             http://${BIND_IP}:${VITE_PORT}"
-echo "[start] bridge udp:      udp://0.0.0.0:${SELECTED_UDP_PORT}"
-echo "[start] ai alert udp:    udp://0.0.0.0:${AI_UDP_PORT}"
-echo "[start] bridge websocket: ws://${BIND_IP}:${BRIDGE_WS_PORT}"
+echo "[start] bridge api:      http://${BIND_IP}:${BRIDGE_WS_PORT}"
 echo "[start] press Ctrl+C to stop both processes"
 
 wait -n "${BRIDGE_PID}" "${FRONTEND_PID}"

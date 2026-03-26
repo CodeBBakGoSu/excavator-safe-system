@@ -197,6 +197,39 @@ function extractOverlayTrackIds(payload: Record<string, unknown>) {
   return Array.from(ids);
 }
 
+function collectRelationTrackIds(relations: unknown) {
+  const ids = new Set<number>();
+
+  if (!Array.isArray(relations)) return ids;
+
+  for (const relation of relations) {
+    if (!relation || typeof relation !== 'object') continue;
+    const typedRelation = relation as Record<string, unknown>;
+    const aId = toFiniteNumber(typedRelation.a_id);
+    const bId = toFiniteNumber(typedRelation.b_id);
+    if (aId != null) ids.add(aId);
+    if (bId != null) ids.add(bId);
+  }
+
+  return ids;
+}
+
+function extractRelationTrackIds(payload: Record<string, unknown>) {
+  const eventGroups = Array.isArray(payload.event_object_groups) ? payload.event_object_groups : [];
+  const prioritizedIds = new Set<number>();
+
+  for (const group of eventGroups) {
+    if (!group || typeof group !== 'object') continue;
+    const typedGroup = group as Record<string, unknown>;
+    for (const trackId of collectRelationTrackIds(typedGroup.relations)) {
+      prioritizedIds.add(trackId);
+    }
+  }
+
+  if (prioritizedIds.size > 0) return Array.from(prioritizedIds);
+  return Array.from(collectRelationTrackIds(payload.relations));
+}
+
 function getHazardToneFromScore(score: number | null, tier: AlertTier): HazardTone {
   if (score == null) return tier === 'risk' ? 'red' : tier === 'caution' ? 'orange' : 'yellow';
   if (score <= 0.8) return 'red';
@@ -338,6 +371,7 @@ export function parseFramePayload(payload: Record<string, unknown>): { frame: Fr
       eventsKo: normalizeEvents(payload.events_ko ?? payload.event_ko ?? payload.event),
       imageSize: toImageSize(payload.image_size),
       overlayTrackIds: extractOverlayTrackIds(payload),
+      relationTrackIds: extractRelationTrackIds(payload),
       alertTier: tier,
       highlight,
       zoneName: extractZoneName(payload),

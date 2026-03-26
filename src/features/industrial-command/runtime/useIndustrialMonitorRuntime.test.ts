@@ -1,20 +1,101 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createSensorPopupRuntime,
+  deriveHazardControlState,
   evaluateHazardQualification,
   getBridgeApiUrl,
   getBridgeHttpBase,
+  getLightControlWsUrl,
   type HazardRiskSample,
   type HazardPopupDebounceMode,
   getRtspApiBase,
   getRtspPlaybackSrc,
   normalizeRtspPlaybackUrl,
+  selectHazardPopupChannelId,
 } from './useIndustrialMonitorRuntime';
+import type { FrontendStateSnapshot } from '../../../../frontend-state/frontendStateTypes';
+import type { ChannelRuntimeState } from '../../../../cctv-poc/types';
 
 function sample(atMs: number, isRisk: boolean): HazardRiskSample {
   return {
     atMs,
     isRisk,
     severity: isRisk ? 'risk' : 'normal',
+  };
+}
+
+function createSnapshot(
+  workers: FrontendStateSnapshot['workers']
+): FrontendStateSnapshot {
+  return {
+    type: 'frontend_state',
+    timestamp: '2026-03-27T09:00:00+09:00',
+    system: {
+      sensorServerOnline: true,
+      zoneRule: {
+        cautionDistanceM: 5,
+        dangerDistanceM: 3,
+      },
+    },
+    workers,
+  };
+}
+
+function createChannelRuntime(overrides: Partial<ChannelRuntimeState> = {}): ChannelRuntimeState {
+  return {
+    connectionStatus: 'connected',
+    reconnectAttempt: 0,
+    errorMessage: null,
+    currentImage: 'data:image/gif;base64,abc',
+    latestFrame: {
+      sourceId: 'cam1',
+      frameIndex: 11,
+      reportWallTsMs: null,
+      wsSentTsMs: null,
+      objects: [
+        { trackId: 7, label: 'person', bbox: [10, 20, 110, 220] },
+        { trackId: 8, label: 'machinery', bbox: [200, 120, 360, 420] },
+      ],
+      combinedKo: '위험 이벤트',
+      topEventKo: '작업자 접근',
+      eventsKo: ['작업자 접근'],
+      imageSize: [640, 480],
+      overlayTrackIds: [7],
+      relationTrackIds: [7],
+      alertTier: 'risk',
+      highlight: null,
+      zoneName: '굴착기 구역 A',
+      detectedTargetLabel: 'person',
+      estimatedDistanceText: '1.2m',
+    },
+    visualFrame: {
+      sourceId: 'cam1',
+      frameIndex: 11,
+      reportWallTsMs: null,
+      wsSentTsMs: null,
+      objects: [
+        { trackId: 7, label: 'person', bbox: [10, 20, 110, 220] },
+        { trackId: 8, label: 'machinery', bbox: [200, 120, 360, 420] },
+      ],
+      combinedKo: '위험 이벤트',
+      topEventKo: '작업자 접근',
+      eventsKo: ['작업자 접근'],
+      imageSize: [640, 480],
+      overlayTrackIds: [7],
+      relationTrackIds: [7],
+      alertTier: 'risk',
+      highlight: null,
+      zoneName: '굴착기 구역 A',
+      detectedTargetLabel: 'person',
+      estimatedDistanceText: '1.2m',
+    },
+    imageNaturalSize: [640, 480],
+    alertTier: 'risk',
+    alertEligible: true,
+    incomingFps: 8,
+    lastMessageAt: null,
+    topEventFlash: true,
+    ...overrides,
   };
 }
 
@@ -60,6 +141,16 @@ describe('getBridgeApiUrl', () => {
         protocol: 'http:',
       })
     ).toBe('http://192.168.1.151:10000/logs');
+  });
+});
+
+describe('getLightControlWsUrl', () => {
+  it('derives a websocket endpoint from the rtsp control api base', () => {
+    expect(getLightControlWsUrl('http://192.168.1.206:8787')).toBe('ws://192.168.1.206:8787/ws/light-control');
+  });
+
+  it('preserves secure protocol when the bridge api is https', () => {
+    expect(getLightControlWsUrl('https://bridge.example.com')).toBe('wss://bridge.example.com/ws/light-control');
   });
 });
 
@@ -199,5 +290,113 @@ describe('evaluateHazardQualification', () => {
         1500
       )
     ).toBe(true);
+  });
+});
+
+describe('selectHazardPopupChannelId', () => {
+  it('prefers the most recent risk camera when available', () => {
+    expect(selectHazardPopupChannelId(2, 1)).toBe(2);
+  });
+
+  it('falls back to the most recent frame camera when there is no recent risk camera', () => {
+    expect(selectHazardPopupChannelId(null, 1)).toBe(1);
+  });
+});
+
+describe('deriveHazardControlState', () => {
+  it('blocks all popups and turns the light off when the nearest sensor worker is approved', () => {
+    const result = deriveHazardControlState({
+      sensorSnapshot: createSnapshot([
+        {
+          tagId: 1,
+          name: 'approved-nearest',
+          approved: true,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 1.1,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: true,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+        {
+          tagId: 2,
+          name: 'far-unapproved',
+          approved: false,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 2.4,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: false,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+      ]),
+      aiHazardDetected: true,
+      latestRiskChannelId: 2,
+      latestFrameChannelId: 1,
+    });
+
+    expect(result.sensorGateState).toBe('approved_nearest');
+    expect(result.effectiveHazardState).toBe('safe');
+    expect(result.popupBlocked).toBe(true);
+    expect(result.lightCommand).toBe('off');
+  });
+
+  it('opens popups and turns the light on when the nearest sensor worker is risky and unapproved', () => {
+    const result = deriveHazardControlState({
+      sensorSnapshot: createSnapshot([
+        {
+          tagId: 9,
+          name: 'unapproved-nearest',
+          approved: false,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 1.2,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: false,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+      ]),
+      aiHazardDetected: false,
+      latestRiskChannelId: 2,
+      latestFrameChannelId: 1,
+    });
+
+    expect(result.sensorGateState).toBe('unapproved_nearest');
+    expect(result.effectiveHazardState).toBe('hazardous');
+    expect(result.popupBlocked).toBe(false);
+    expect(result.lightCommand).toBe('on');
+    expect(result.selectedPopupChannelId).toBe(2);
+    expect(result.popupReason).toBe('nearest_unapproved_sensor');
+  });
+
+  it('allows ai popups only when no sensor worker is present', () => {
+    const result = deriveHazardControlState({
+      sensorSnapshot: createSnapshot([]),
+      aiHazardDetected: true,
+      latestRiskChannelId: null,
+      latestFrameChannelId: 1,
+    });
+
+    expect(result.sensorGateState).toBe('no_sensor');
+    expect(result.effectiveHazardState).toBe('hazardous');
+    expect(result.popupBlocked).toBe(false);
+    expect(result.lightCommand).toBe('on');
+    expect(result.selectedPopupChannelId).toBe(1);
+    expect(result.popupReason).toBe('ai_only');
+  });
+});
+
+describe('createSensorPopupRuntime', () => {
+  it('renders all bounding boxes without relation-only emphasis for sensor-triggered popups', () => {
+    const runtime = createSensorPopupRuntime(createChannelRuntime());
+
+    expect(runtime.visualFrame.overlayTrackIds).toEqual([7, 8]);
+    expect(runtime.visualFrame.relationTrackIds).toEqual([]);
   });
 });

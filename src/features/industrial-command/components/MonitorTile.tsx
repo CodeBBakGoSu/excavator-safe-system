@@ -1,6 +1,7 @@
 import { normalizeBBoxForImage } from '../../../../cctv-poc/frameParsing';
 import type { ChannelConfig, ChannelRuntimeState, ConnectionStatus, DetectedObject } from '../../../../cctv-poc/types';
 import { CommandIcons } from './CommandIcons';
+import { getOverlayObjects, shouldRenderBoxes } from './overlayUtils';
 import { RtspFramePlayer } from './RtspFramePlayer';
 
 function cn(...classes: Array<string | false | null | undefined>) {
@@ -51,33 +52,8 @@ function getAlertSummary(runtime: ChannelRuntimeState) {
   );
 }
 
-function isRelationHighlighted(runtime: ChannelRuntimeState, object: DetectedObject) {
-  if (object.trackId == null) return false;
-
-  return object.label.toLowerCase() === 'person' && object.trackId === runtime.visualFrame.highlight?.personTrackId;
-}
-
-function getOverlayObjects(runtime: ChannelRuntimeState, mode: 'always' | 'alert' | 'risk') {
-  const highlightTrackIds = new Set(runtime.visualFrame.overlayTrackIds);
-  const sourceObjects = mode === 'always'
-    ? runtime.visualFrame.objects
-    : runtime.visualFrame.objects.filter((object) => object.trackId != null && highlightTrackIds.has(object.trackId));
-
-  return sourceObjects.map((object) => ({
-    object,
-    highlighted: object.trackId != null && highlightTrackIds.has(object.trackId),
-    relationHighlighted: isRelationHighlighted(runtime, object),
-  }));
-}
-
 function getOverlaySize(runtime: ChannelRuntimeState) {
   return runtime.imageNaturalSize ?? runtime.visualFrame.imageSize ?? [1920, 1080];
-}
-
-function shouldRenderBoxes(mode: 'always' | 'alert' | 'risk', alertTier: ChannelRuntimeState['alertTier']) {
-  if (mode === 'always') return true;
-  if (mode === 'alert') return alertTier !== 'normal';
-  return alertTier === 'risk';
 }
 
 export function MonitorTile({

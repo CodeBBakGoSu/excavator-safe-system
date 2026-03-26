@@ -23,6 +23,7 @@ class MockWebSocket {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
+  sent: string[] = [];
 
   constructor(url: string) {
     this.url = url;
@@ -32,6 +33,10 @@ class MockWebSocket {
   close() {
     this.readyState = MockWebSocket.CLOSED;
     this.onclose?.();
+  }
+
+  send(data: string) {
+    this.sent.push(data);
   }
 }
 
@@ -52,6 +57,7 @@ function createRuntimeState(overrides: Partial<ChannelRuntimeState> = {}): Chann
       eventsKo: [],
       imageSize: null,
       overlayTrackIds: [],
+      relationTrackIds: [],
       alertTier: 'normal',
       highlight: null,
       zoneName: null,
@@ -69,6 +75,7 @@ function createRuntimeState(overrides: Partial<ChannelRuntimeState> = {}): Chann
       eventsKo: [],
       imageSize: null,
       overlayTrackIds: [],
+      relationTrackIds: [],
       alertTier: 'normal',
       highlight: null,
       zoneName: null,
@@ -101,6 +108,13 @@ function createCallbackRecorder() {
     applyRtspUrl: vi.fn(),
     startRtspStream: vi.fn().mockResolvedValue(undefined),
     stopRtspStream: vi.fn().mockResolvedValue(undefined),
+    refreshTelegramSettings: vi.fn().mockResolvedValue(undefined),
+    updateTelegramBotTokenDraft: vi.fn(),
+    updateTelegramChatSelection: vi.fn(),
+    updateTelegramAutoSync: vi.fn(),
+    updateTelegramSensorCooldownDraft: vi.fn(),
+    syncTelegramChats: vi.fn().mockResolvedValue(undefined),
+    applyTelegramSettings: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -119,6 +133,10 @@ function SettingsWorkflowHarness({
   >('recent_three_frames_two_risks');
   const [popupDurationMs, setPopupDurationMs] = useState(2000);
   const [sensorPopupDurationMs, setSensorPopupDurationMs] = useState(3200);
+  const [telegramBotTokenDraft, setTelegramBotTokenDraft] = useState('');
+  const [telegramSensorCooldownDraft, setTelegramSensorCooldownDraft] = useState('5');
+  const [telegramAutoSync, setTelegramAutoSync] = useState(true);
+  const [telegramSelectedChatIds, setTelegramSelectedChatIds] = useState<string[]>(['8477727287']);
 
   const runtime = {
     wsUrl: 'ws://saved-cctv',
@@ -147,14 +165,38 @@ function SettingsWorkflowHarness({
     focusedChannelId: 1,
     popupChannelId: null,
     popupSnapshot: null,
+    nearestSensorWorker: null,
+    sensorGateState: 'no_sensor',
+    effectiveHazardState: 'safe',
+    latestRiskChannelId: null,
+    latestFrameChannelId: null,
     sensorConnectionStatus: 'idle',
     sensorReconnectAttempt: 0,
     sensorSettingsMessage: null,
     fieldStateMessage: null,
     sensorSnapshot: null,
     sensorPopupOpen: false,
+    telegramSettingsMessage: null,
+    telegramBotTokenConfigured: true,
+    telegramBotTokenMasked: '8385********AIVk',
+    telegramBotTokenDraft,
+    telegramKnownChats: [
+      {
+        id: '8477727287',
+        type: 'private',
+        title: '기현 홍',
+        selected: telegramSelectedChatIds.includes('8477727287'),
+      },
+    ],
+    telegramSelectedChatIds,
+    telegramAutoSync,
+    telegramSensorAlertCooldownMs: 5000,
+    telegramSensorCooldownDraft,
+    telegramSyncingChats: false,
+    telegramSavingSettings: false,
     sensorLogs: [],
     cctvLogs: [],
+    eventFeed: [],
     logActionMessage: null,
     savingLogType: null,
     updateWsDraft: (value: string) => {
@@ -201,6 +243,27 @@ function SettingsWorkflowHarness({
     applyRtspUrl: recorder.applyRtspUrl,
     startRtspStream: recorder.startRtspStream,
     stopRtspStream: recorder.stopRtspStream,
+    refreshTelegramSettings: recorder.refreshTelegramSettings,
+    updateTelegramBotTokenDraft: (value: string) => {
+      recorder.updateTelegramBotTokenDraft(value);
+      setTelegramBotTokenDraft(value);
+    },
+    updateTelegramChatSelection: (chatId: string, selected: boolean) => {
+      recorder.updateTelegramChatSelection(chatId, selected);
+      setTelegramSelectedChatIds((prev) =>
+        selected ? [...prev, chatId] : prev.filter((entry) => entry !== chatId)
+      );
+    },
+    updateTelegramAutoSync: (value: boolean) => {
+      recorder.updateTelegramAutoSync(value);
+      setTelegramAutoSync(value);
+    },
+    updateTelegramSensorCooldownDraft: (value: string) => {
+      recorder.updateTelegramSensorCooldownDraft(value);
+      setTelegramSensorCooldownDraft(value);
+    },
+    syncTelegramChats: recorder.syncTelegramChats,
+    applyTelegramSettings: recorder.applyTelegramSettings,
     openChannelPopup: noop,
     closeChannelPopup: noop,
     openSensorSnapshotPreview: noop,
@@ -241,8 +304,26 @@ describe('SettingsModal', () => {
     expect(screen.getByLabelText('BBOX 표시 여부')).toHaveValue('true');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('always');
     expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('recent_three_frames_two_risks');
-    expect(screen.getByLabelText('위험 팝업 시간(ms)')).toHaveValue(2000);
-    expect(screen.getByLabelText('현장 상태 팝업 시간(ms)')).toHaveValue(3200);
+    expect(screen.getByLabelText('위험 팝업 시간(초)')).toHaveValue(2);
+    expect(screen.getByLabelText('현장 상태 팝업 시간(초)')).toHaveValue(3.2);
+    expect(screen.getByLabelText('Telegram Bot Token')).toHaveValue('');
+    expect(screen.getByLabelText('센서 알림 쿨다운(초)')).toHaveValue(5);
+    expect(screen.getByRole('checkbox', { name: '채팅방 자동 동기화' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: '기현 홍 (private)' })).toBeChecked();
+    const telegramSummary = screen.getByText('Telegram 알림').closest('summary');
+    const telegramDetails = telegramSummary?.parentElement as HTMLDetailsElement | null;
+
+    expect(telegramSummary).toBeTruthy();
+    expect(telegramDetails?.open).toBe(true);
+
+    fireEvent.click(telegramSummary as Element);
+
+    expect(telegramDetails?.open).toBe(false);
+
+    fireEvent.click(telegramSummary as Element);
+
+    expect(telegramDetails?.open).toBe(true);
+    expect(screen.getByLabelText('Telegram Bot Token')).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('CCTV WebSocket URL'), {
       target: { value: 'ws://localhost:9999/frames' },
@@ -262,42 +343,70 @@ describe('SettingsModal', () => {
     fireEvent.change(screen.getByLabelText('위험 팝업 감지 방식'), {
       target: { value: 'consecutive_two_risks' },
     });
-    fireEvent.change(screen.getByLabelText('위험 팝업 시간(ms)'), {
-      target: { value: '4500' },
+    fireEvent.change(screen.getByLabelText('위험 팝업 시간(초)'), {
+      target: { value: '4.5' },
     });
-    fireEvent.change(screen.getByLabelText('현장 상태 팝업 시간(ms)'), {
-      target: { value: '6200' },
+    fireEvent.change(screen.getByLabelText('현장 상태 팝업 시간(초)'), {
+      target: { value: '6.2' },
     });
+    fireEvent.change(screen.getByLabelText('Telegram Bot Token'), {
+      target: { value: 'new-token' },
+    });
+    fireEvent.change(screen.getByLabelText('센서 알림 쿨다운(초)'), {
+      target: { value: '' },
+    });
+    expect(screen.getByLabelText('센서 알림 쿨다운(초)')).toHaveValue(null);
+    fireEvent.change(screen.getByLabelText('센서 알림 쿨다운(초)'), {
+      target: { value: '45' },
+    });
+    fireEvent.click(screen.getByRole('checkbox', { name: '채팅방 자동 동기화' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '기현 홍 (private)' }));
 
     expect(recorder.updateWsDraft).toHaveBeenLastCalledWith('ws://localhost:9999/frames');
     expect(recorder.updateSensorBridgeDraft).toHaveBeenLastCalledWith('ws://localhost:8787');
     expect(recorder.updateRtspControlDraft).toHaveBeenLastCalledWith('http://192.168.1.7:10000');
     expect(recorder.updateRtspUrlDraft).toHaveBeenLastCalledWith('rtsp://10.0.0.5/live.sdp');
-    expect(recorder.updateOverlayDisplayMode).toHaveBeenLastCalledWith('risk');
-    expect(recorder.updateHazardPopupDebounceMode).toHaveBeenLastCalledWith('consecutive_two_risks');
+    expect(recorder.updateTelegramBotTokenDraft).toHaveBeenLastCalledWith('new-token');
+    expect(recorder.updateTelegramSensorCooldownDraft).toHaveBeenLastCalledWith('45');
+    expect(recorder.updateTelegramAutoSync).toHaveBeenLastCalledWith(false);
+    expect(recorder.updateTelegramChatSelection).toHaveBeenLastCalledWith('8477727287', false);
     expect(screen.getByLabelText('CCTV WebSocket URL')).toHaveValue('ws://localhost:9999/frames');
     expect(screen.getByLabelText('Sensor Bridge WebSocket URL')).toHaveValue('ws://localhost:8787');
     expect(screen.getByLabelText('RTSP Control API URL')).toHaveValue('http://192.168.1.7:10000');
     expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://10.0.0.5/live.sdp');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('risk');
     expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('consecutive_two_risks');
-    expect(screen.getByLabelText('위험 팝업 시간(ms)')).toHaveValue(4500);
-    expect(screen.getByLabelText('현장 상태 팝업 시간(ms)')).toHaveValue(6200);
+    expect(screen.getByLabelText('위험 팝업 시간(초)')).toHaveValue(4.5);
+    expect(screen.getByLabelText('현장 상태 팝업 시간(초)')).toHaveValue(6.2);
     expect(recorder.setPopupDurationMs).not.toHaveBeenCalled();
     expect(recorder.setSensorPopupDurationMs).not.toHaveBeenCalled();
     expect(recorder.applyWsUrl).not.toHaveBeenCalled();
     expect(recorder.applySensorBridgeUrl).not.toHaveBeenCalled();
     expect(recorder.applyRtspControlUrl).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '기본 연결 적용' }));
 
-    expect(recorder.setPopupDurationMs).toHaveBeenCalledWith(4500);
-    expect(recorder.setSensorPopupDurationMs).toHaveBeenCalledWith(6200);
     expect(recorder.applyWsUrl).toHaveBeenCalledOnce();
     expect(recorder.applySensorBridgeUrl).toHaveBeenCalledOnce();
     expect(recorder.applyRtspControlUrl).toHaveBeenCalledOnce();
     expect(recorder.applyRtspUrl).toHaveBeenCalledOnce();
+    expect(recorder.setPopupDurationMs).not.toHaveBeenCalled();
+    expect(recorder.setSensorPopupDurationMs).not.toHaveBeenCalled();
+    expect(recorder.applyTelegramSettings).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '표시/팝업 적용' }));
+
+    expect(recorder.updateOverlayDisplayMode).toHaveBeenCalledWith('risk');
+    expect(recorder.updateHazardPopupDebounceMode).toHaveBeenCalledWith('consecutive_two_risks');
+    expect(recorder.setPopupDurationMs).toHaveBeenCalledWith(4500);
+    expect(recorder.setSensorPopupDurationMs).toHaveBeenCalledWith(6200);
     expect(recorder.startRtspStream).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '채팅방 찾기' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Telegram 적용' }));
+
+    expect(recorder.syncTelegramChats).toHaveBeenCalledOnce();
+    expect(recorder.applyTelegramSettings).toHaveBeenCalledOnce();
 
     fireEvent.click(screen.getByRole('button', { name: 'RTSP 시작' }));
     fireEvent.click(screen.getByRole('button', { name: 'RTSP 중지' }));
@@ -323,14 +432,15 @@ describe('SettingsModal', () => {
     fireEvent.change(screen.getByLabelText('위험 팝업 감지 방식'), {
       target: { value: 'consecutive_two_risks' },
     });
-    fireEvent.change(screen.getByLabelText('위험 팝업 시간(ms)'), {
-      target: { value: '4500' },
+    fireEvent.change(screen.getByLabelText('위험 팝업 시간(초)'), {
+      target: { value: '4.5' },
     });
-    fireEvent.change(screen.getByLabelText('현장 상태 팝업 시간(ms)'), {
-      target: { value: '6200' },
+    fireEvent.change(screen.getByLabelText('현장 상태 팝업 시간(초)'), {
+      target: { value: '6.2' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '기본 연결 적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '표시/팝업 적용' }));
 
     act(() => {
       vi.runOnlyPendingTimers();

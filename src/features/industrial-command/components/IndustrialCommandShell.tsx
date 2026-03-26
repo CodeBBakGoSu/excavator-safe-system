@@ -45,15 +45,6 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
     channels.find(({ runtime: channelRuntime }) => channelRuntime.alertTier === 'caution') ??
     focusedChannel;
   const activeRiskSummary = highestRiskChannel ? getAlertSummary(highestRiskChannel.runtime) : '실시간 위험 이벤트 대기';
-  const totalObjectCount = channels.reduce(
-    (count, { runtime: channelRuntime }) => count + channelRuntime.visualFrame.objects.length,
-    0
-  );
-  const latestFocusedLog = [...runtime.cctvLogs]
-    .reverse()
-    .find((entry) => entry.summary.includes(focusedChannel.channel.channel));
-  const latestSourceLabel = focusedRuntime.visualFrame.sourceId || '-';
-  const latestFrameLabel = `FRAME ${focusedRuntime.visualFrame.frameIndex ?? '--'} · ${focusedRuntime.incomingFps} FPS`;
   const cameraDisconnectDisabled = !channels.some(
     ({ runtime: channelRuntime, channel }) =>
       channel.sourceType === 'cctv' && channelRuntime.connectionStatus !== 'idle'
@@ -87,7 +78,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
           totalCount={channels.length}
         />
 
-        <main className="grid flex-1 grid-cols-1 gap-2 lg:gap-2.5">
+        <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:gap-2.5">
           <MonitorSection
             bboxVisible={runtime.bboxVisible}
             channels={channels}
@@ -99,16 +90,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
             rtspStreamStatus={runtime.rtspStreamStatus}
           />
           <TelemetrySection
-            focusedChannelLabel={`${focusedChannel.channel.channel} ${focusedChannel.channel.title}`}
-            latestFrameLabel={latestFrameLabel}
-            latestSourceLabel={latestSourceLabel}
-            systemLogDetail={
-              latestFocusedLog?.detail ||
-              focusedRuntime.visualFrame.combinedKo ||
-              '집계된 시스템 로그가 없어 실시간 프레임 요약을 표시합니다.'
-            }
-            systemLogSummary={latestFocusedLog?.summary || getAlertSummary(focusedRuntime)}
-            totalObjectCount={totalObjectCount}
+            eventFeed={runtime.eventFeed}
           />
         </main>
       </div>
@@ -122,10 +104,21 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         open={settingsOpen}
         popupDurationMs={runtime.popupDurationMs}
         applyRtspUrl={runtime.applyRtspUrl}
+        applyTelegramSettings={runtime.applyTelegramSettings}
         sensorBridgeDraft={runtime.sensorBridgeDraft}
         rtspControlDraft={runtime.rtspControlDraft}
         sensorSettingsMessage={runtime.sensorSettingsMessage}
         sensorPopupDurationMs={runtime.sensorPopupDurationMs}
+        syncTelegramChats={runtime.syncTelegramChats}
+        telegramAutoSync={runtime.telegramAutoSync}
+        telegramBotTokenConfigured={runtime.telegramBotTokenConfigured}
+        telegramBotTokenDraft={runtime.telegramBotTokenDraft}
+        telegramBotTokenMasked={runtime.telegramBotTokenMasked}
+        telegramKnownChats={runtime.telegramKnownChats}
+        telegramSavingSettings={runtime.telegramSavingSettings}
+        telegramSensorCooldownDraft={runtime.telegramSensorCooldownDraft}
+        telegramSettingsMessage={runtime.telegramSettingsMessage}
+        telegramSyncingChats={runtime.telegramSyncingChats}
         rtspStreamMessage={runtime.rtspStreamMessage}
         rtspStreamStatus={runtime.rtspStreamStatus}
         rtspUrlDraft={runtime.rtspUrlDraft}
@@ -139,6 +132,10 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         updateBboxVisible={runtime.updateBboxVisible}
         updateOverlayDisplayMode={runtime.updateOverlayDisplayMode}
         updateHazardPopupDebounceMode={runtime.updateHazardPopupDebounceMode}
+        updateTelegramAutoSync={runtime.updateTelegramAutoSync}
+        updateTelegramBotTokenDraft={runtime.updateTelegramBotTokenDraft}
+        updateTelegramChatSelection={runtime.updateTelegramChatSelection}
+        updateTelegramSensorCooldownDraft={runtime.updateTelegramSensorCooldownDraft}
         updateSensorBridgeDraft={runtime.updateSensorBridgeDraft}
         updateRtspControlDraft={runtime.updateRtspControlDraft}
         updateRtspUrlDraft={runtime.updateRtspUrlDraft}

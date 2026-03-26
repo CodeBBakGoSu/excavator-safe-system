@@ -27,6 +27,7 @@ export interface FrameSnapshot {
   eventsKo: string[];
   imageSize: [number, number] | null;
   overlayTrackIds: number[];
+  relationTrackIds: number[];
   alertTier: AlertTier;
   highlight: HighlightedHazard | null;
   zoneName: string | null;

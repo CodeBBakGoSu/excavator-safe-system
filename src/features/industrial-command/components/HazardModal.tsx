@@ -1,6 +1,7 @@
-import { useEffect, useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { normalizeBBoxForImage } from '../../../../cctv-poc/frameParsing';
 import type { ChannelRuntimeState } from '../../../../cctv-poc/types';
+import { getOverlayObjects, shouldRenderBoxes } from './overlayUtils';
 
 function getToneClassName(alertTier: ChannelRuntimeState['alertTier']) {
   if (alertTier === 'risk') return 'border-error/40 bg-error/10 text-error';
@@ -19,17 +20,6 @@ interface HazardModalProps {
   onClose: () => void;
 }
 
-function shouldRenderBoxes(mode: 'always' | 'alert' | 'risk', alertTier: ChannelRuntimeState['alertTier']) {
-  if (mode === 'always') return true;
-  if (mode === 'alert') return alertTier !== 'normal';
-  return alertTier === 'risk';
-}
-
-function isRelationHighlighted(runtime: ChannelRuntimeState, trackId: number | null, label: string) {
-  if (trackId == null) return false;
-  return label.toLowerCase() === 'person' && trackId === runtime.latestFrame.highlight?.personTrackId;
-}
-
 export function HazardModal({
   open,
   channelLabel,
@@ -44,7 +34,51 @@ export function HazardModal({
   const descriptionId = useId();
   const frame = runtime.latestFrame;
   const showBoxes = bboxVisible && shouldRenderBoxes(overlayDisplayMode, runtime.alertTier);
+  const overlayObjects = getOverlayObjects({ ...runtime, visualFrame: frame }, overlayDisplayMode);
   const [overlayWidth, overlayHeight] = runtime.imageNaturalSize ?? frame.imageSize ?? [1920, 1080];
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const timeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      return;
+    }
+
+    if (runtime.alertTier === 'risk') {
+      if (!audioRef.current) {
+        const audio = new Audio('/siren.mp3');
+        audio.loop = false;
+        
+        audio.addEventListener('ended', () => {
+          if (timeoutRef.current) clearTimeout(timeoutRef.current);
+          timeoutRef.current = window.setTimeout(() => {
+            audio.currentTime = 0;
+            audio.play().catch((e) => console.log('Siren replay prevented: ', e));
+          }, 500);
+        });
+
+        audioRef.current = audio;
+      }
+
+      const audio = audioRef.current;
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((error) => console.log('Siren autoplay prevented: ', error));
+      }
+
+      return () => {
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        audio.pause();
+        audio.currentTime = 0;
+      };
+    }
+  }, [open, runtime.alertTier]);
 
   useEffect(() => {
     if (!open) return;
@@ -70,7 +104,7 @@ export function HazardModal({
         aria-describedby={descriptionId}
         aria-labelledby={titleId}
         aria-modal="true"
-        className="hazard-modal-shell ghost-border w-full max-w-[min(96vw,1720px)] rounded-[36px] bg-surface px-6 py-6 shadow-2xl sm:px-8 sm:py-8"
+        className={`hazard-modal-shell ghost-border w-full max-w-[min(96vw,1720px)] rounded-[36px] px-6 py-6 shadow-2xl sm:px-8 sm:py-8 ${runtime.alertTier === 'risk' ? 'hazard-modal-flash' : 'bg-surface'}`}
         role="dialog"
       >
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -93,7 +127,7 @@ export function HazardModal({
           </button>
         </div>
 
-        <div className="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(380px,0.8fr)]">
+        <div className="mt-8 max-w-6xl mx-auto">
           <div className="relative overflow-hidden rounded-[32px] border border-outline/30 bg-background">
             <div className="flex items-center justify-between border-b border-outline/30 px-5 py-5">
               <div className="flex flex-wrap items-center gap-2">
@@ -124,11 +158,10 @@ export function HazardModal({
                       preserveAspectRatio="none"
                       viewBox={`0 0 ${overlayWidth} ${overlayHeight}`}
                     >
-                      {frame.objects.map((object) => {
+                      {overlayObjects.map(({ object, relationHighlighted }) => {
                         const [x1, y1, x2, y2] = normalizeBBoxForImage(object.bbox, [overlayWidth, overlayHeight]);
                         const width = Math.max(0, x2 - x1);
                         const height = Math.max(0, y2 - y1);
-                        const relationHighlighted = isRelationHighlighted(runtime, object.trackId, object.label);
                         const stroke = relationHighlighted ? '#ff3b30' : '#4b8eff';
                         const fill = relationHighlighted ? 'rgba(255, 59, 48, 0.2)' : 'rgba(75, 142, 255, 0.12)';
 
@@ -156,39 +189,13 @@ export function HazardModal({
                   아직 수신된 위험 프레임이 없습니다.
                 </div>
               )}
-              <div className="absolute inset-x-5 bottom-5 rounded-[22px] border border-white/12 bg-black/72 px-5 py-4 text-white backdrop-blur-sm">
+              <div className="absolute top-5 left-1/2 -translate-x-1/2 w-fit max-w-[90%] rounded-[22px] border border-white/12 bg-black/72 px-6 py-4 text-center text-white backdrop-blur-sm">
                 <p className="text-lg font-black leading-7 sm:text-xl">{summary || '위험 이벤트 요약 대기 중'}</p>
-                <p className="mt-2 text-base leading-7 text-white/88 sm:text-lg">{frame.combinedKo || '프레임 세부 요약이 수신되면 여기에 표시됩니다.'}</p>
               </div>
             </div>
           </div>
 
-          <div className="space-y-4">
-            <DetailCard label="감시 구역" value={frame.zoneName || channelTitle} />
-            <DetailCard label="감지 대상" value={frame.detectedTargetLabel || '실제 감지 대상 데이터 대기 중'} />
-            <DetailCard label="거리 추정" value={frame.estimatedDistanceText || '실제 거리 데이터 대기 중'} />
-            <DetailCard label="이벤트 요약" value={summary || '실시간 이벤트 요약 대기 중'} />
-            <div className="rounded-[28px] border border-outline/30 bg-surface-high px-5 py-5">
-              <p className="text-base font-semibold text-secondary">감지 이벤트</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {(frame.eventsKo.length > 0 ? frame.eventsKo : ['실시간 위험 이벤트 대기']).map((event, index) => (
-                  <span
-                    className={`rounded-full border px-4 py-2 text-sm font-semibold ${getToneClassName(runtime.alertTier)}`}
-                    key={`${event}-${index}`}
-                  >
-                    {event}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <button
-              className="w-full rounded-[26px] border border-primary bg-primary px-5 py-4 text-base font-black text-on-primary transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              onClick={onClose}
-              type="button"
-            >
-              상황 확인
-            </button>
-          </div>
+
         </div>
       </div>
     </div>

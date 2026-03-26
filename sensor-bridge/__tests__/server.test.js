@@ -3,61 +3,78 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createAiAlertMessage,
-  createBridgeMessage,
   createBridgeHttpHandler,
+  createLightControlBridge,
   createLogRequestHandler,
   createRtspControlHandlers,
   createSensorBridgeServer,
+  createSensorAlertMessage,
+  createTelegramChatRegistry,
   saveRuntimeLogFile,
 } from '../server.js';
 
-describe('createBridgeMessage', () => {
-  it('returns a normalized frontend_state payload string from an incoming udp buffer', () => {
-    const result = createBridgeMessage(
-      Buffer.from(
-        JSON.stringify({
-          type: 'frontend_state',
-          timestamp: '2026-03-22T20:30:15.120+09:00',
-          system: {
-            sensor_server_online: true,
-            zone_rule: {
-              caution_distance_m: 5,
-              danger_distance_m: 3,
-            },
-          },
-          workers: [
-            {
-              tag_id: 1,
-              name: 'worker_1',
-              approved: false,
-              connected: true,
-              x: 1,
-              y: 2,
-              distance_m: 2.24,
-              zone_status: 'danger',
-              is_warning: true,
-              is_emergency: true,
-              last_update: '2026-03-22T20:30:15.080+09:00',
-            },
-          ],
-        })
-      )
-    );
+function createTelegramSettingsStoreMock({
+  botToken = 'bot-token',
+  chatIds = [],
+  autoSync = false,
+  sensorAlertCooldownMs = 5000,
+  knownChats = [],
+} = {}) {
+  const state = {
+    botToken,
+    chatIds: [...chatIds],
+    autoSync,
+    sensorAlertCooldownMs,
+    knownChats: [...knownChats],
+  };
 
-    expect(JSON.parse(result)).toMatchObject({
-      type: 'frontend_state',
-      workers: [{ tag_id: 1 }],
-    });
+  const toPublicSettings = () => ({
+    botTokenConfigured: Boolean(state.botToken),
+    botTokenMasked: 'token',
+    chatIds: [...state.chatIds],
+    autoSync: state.autoSync,
+    sensorAlertCooldownMs: state.sensorAlertCooldownMs,
+    knownChats: state.knownChats.map((entry) => ({
+      ...entry,
+      selected: state.chatIds.includes(entry.id),
+    })),
   });
 
-  it('throws on invalid json packets', () => {
-    expect(() => createBridgeMessage(Buffer.from('invalid-json'))).toThrow();
-  });
-
-  it('throws on payloads that are not frontend_state snapshots', () => {
-    expect(() => createBridgeMessage(Buffer.from(JSON.stringify({ type: 'sensor_event' })))).toThrow(/frontend_state/i);
-  });
-});
+  return {
+    initialize: vi.fn().mockResolvedValue(toPublicSettings()),
+    waitUntilReady: vi.fn().mockResolvedValue(undefined),
+    getSettings: vi.fn(() => ({
+      botToken: state.botToken,
+      chatIds: [...state.chatIds],
+      autoSync: state.autoSync,
+      sensorAlertCooldownMs: state.sensorAlertCooldownMs,
+      knownChats: state.knownChats.map((entry) => ({
+        ...entry,
+        selected: state.chatIds.includes(entry.id),
+      })),
+    })),
+    getPublicSettings: vi.fn(() => toPublicSettings()),
+    update: vi.fn().mockImplementation(async (nextPartial = {}) => {
+      if (typeof nextPartial.botToken === 'string' && nextPartial.botToken.trim()) {
+        state.botToken = nextPartial.botToken.trim();
+      }
+      if (Array.isArray(nextPartial.chatIds)) {
+        state.chatIds = nextPartial.chatIds.map(String);
+      }
+      if (typeof nextPartial.autoSync === 'boolean') {
+        state.autoSync = nextPartial.autoSync;
+      }
+      if (typeof nextPartial.sensorAlertCooldownMs === 'number') {
+        state.sensorAlertCooldownMs = nextPartial.sensorAlertCooldownMs;
+      }
+      return toPublicSettings();
+    }),
+    replaceKnownChats: vi.fn().mockImplementation(async (nextKnownChats = []) => {
+      state.knownChats = [...nextKnownChats];
+      return toPublicSettings();
+    }),
+  };
+}
 
 describe('createLogRequestHandler', () => {
   it('returns cors headers for preflight and log save responses', async () => {
@@ -118,182 +135,145 @@ describe('createLogRequestHandler', () => {
 });
 
 describe('createSensorBridgeServer', () => {
-  it('broadcasts valid frontend_state UDP payloads to websocket clients', () => {
-    const sent = [];
-    const udpSocket = { bind: vi.fn(), on: vi.fn(), close: vi.fn() };
+  it('starts an http bridge server for relay and control apis', () => {
     const httpServer = { listen: vi.fn(), close: vi.fn() };
-    const wsServer = { on: vi.fn(), clients: new Set([{ readyState: 1, send: (message) => sent.push(message) }]), close: vi.fn() };
 
     const server = createSensorBridgeServer({
-      createUdpSocket: () => udpSocket,
       createHttpServer: () => httpServer,
-      createWebSocketServer: () => wsServer,
+      createTelegramSettingsStore: () => createTelegramSettingsStoreMock(),
       logger: { info: vi.fn(), error: vi.fn() },
     });
 
     server.start({
-      udpHost: '0.0.0.0',
-      udpPort: 9500,
       wsPort: 8787,
     });
 
-    const messageHandler = udpSocket.on.mock.calls.find(([eventName]) => eventName === 'message')[1];
-    messageHandler(
-      Buffer.from(
-        JSON.stringify({
-          type: 'frontend_state',
-          timestamp: '2026-03-22T20:30:15.120+09:00',
-          system: {
-            sensor_server_online: true,
-            zone_rule: { caution_distance_m: 5, danger_distance_m: 3 },
-          },
-          workers: [],
-        })
-      ),
-      { address: '127.0.0.1', port: 9999 }
-    );
-
-    expect(sent).toHaveLength(1);
-    expect(JSON.parse(sent[0])).toMatchObject({ type: 'frontend_state' });
+    expect(httpServer.listen).toHaveBeenCalledWith(8787, '0.0.0.0', expect.any(Function));
   });
 
-  it('drops invalid frontend_state payloads and logs an error', () => {
-    const logger = { info: vi.fn(), error: vi.fn() };
-    const sent = [];
-    const udpSocket = { bind: vi.fn(), on: vi.fn(), close: vi.fn() };
+  it('stops the http bridge server cleanly', () => {
     const httpServer = { listen: vi.fn(), close: vi.fn() };
-    const wsServer = { on: vi.fn(), clients: new Set([{ readyState: 1, send: (message) => sent.push(message) }]), close: vi.fn() };
+    const rtspManager = { stop: vi.fn() };
 
     const server = createSensorBridgeServer({
-      createUdpSocket: () => udpSocket,
       createHttpServer: () => httpServer,
-      createWebSocketServer: () => wsServer,
-      logger,
+      createRtspStreamManager: () => rtspManager,
+      createTelegramSettingsStore: () => createTelegramSettingsStoreMock(),
+      logger: { info: vi.fn(), error: vi.fn() },
     });
 
     server.start({
-      udpHost: '0.0.0.0',
-      udpPort: 9500,
       wsPort: 8787,
     });
+    server.stop();
 
-    const messageHandler = udpSocket.on.mock.calls.find(([eventName]) => eventName === 'message')[1];
-    messageHandler(Buffer.from(JSON.stringify({ type: 'frontend_state', workers: [] })), { address: '127.0.0.1', port: 9999 });
+    expect(rtspManager.stop).toHaveBeenCalledOnce();
+    expect(httpServer.close).toHaveBeenCalledOnce();
+  });
+});
 
-    expect(sent).toHaveLength(0);
-    expect(logger.error).toHaveBeenCalled();
+describe('createLightControlBridge', () => {
+  it('sends a validated light control json payload over tcp', async () => {
+    const writes = [];
+    const end = vi.fn();
+    const socket = {
+      once(event, handler) {
+        if (event === 'connect') {
+          handler();
+        }
+        return this;
+      },
+      on() {
+        return this;
+      },
+      write: vi.fn((payload, callback) => {
+        writes.push(payload);
+        callback?.();
+      }),
+      end,
+    };
+    const createConnection = vi.fn(() => socket);
+    const bridge = createLightControlBridge({
+      createConnection,
+      logger: { error: vi.fn(), info: vi.fn() },
+    });
+
+    await bridge.relay({
+      type: 'light_control',
+      command: 'on',
+      timestamp: '2026-03-27T10:00:00+09:00',
+    });
+
+    expect(createConnection).toHaveBeenCalledWith({ host: '192.168.1.7', port: 8888 });
+    expect(writes).toEqual([
+      JSON.stringify({
+        type: 'light_control',
+        command: 'on',
+        timestamp: '2026-03-27T10:00:00+09:00',
+      }),
+    ]);
+    expect(end).toHaveBeenCalledOnce();
   });
 
-  it('sends telegram photo alerts for AI UDP payloads with RISK level or higher', async () => {
-    const logger = { info: vi.fn(), error: vi.fn() };
-    const sensorUdpSocket = { bind: vi.fn(), on: vi.fn(), close: vi.fn() };
-    const aiUdpSocket = { bind: vi.fn(), on: vi.fn(), close: vi.fn() };
-    const httpServer = { listen: vi.fn(), close: vi.fn() };
-    const wsServer = { on: vi.fn(), clients: new Set(), close: vi.fn() };
-    const sendTelegramAlert = vi.fn().mockResolvedValue(undefined);
-
-    const server = createSensorBridgeServer({
-      createUdpSocket: vi.fn()
-        .mockReturnValueOnce(sensorUdpSocket)
-        .mockReturnValueOnce(aiUdpSocket),
-      createHttpServer: () => httpServer,
-      createWebSocketServer: () => wsServer,
-      createTelegramAlertSender: () => sendTelegramAlert,
-      logger,
+  it('deduplicates repeated commands but still forwards state changes immediately', async () => {
+    const writes = [];
+    const createConnection = vi.fn(() => ({
+      once(event, handler) {
+        if (event === 'connect') {
+          handler();
+        }
+        return this;
+      },
+      on() {
+        return this;
+      },
+      write: vi.fn((payload, callback) => {
+        writes.push(payload);
+        callback?.();
+      }),
+      end: vi.fn(),
+    }));
+    const bridge = createLightControlBridge({
+      createConnection,
+      logger: { error: vi.fn(), info: vi.fn() },
     });
 
-    server.start({
-      udpHost: '0.0.0.0',
-      udpPort: 9500,
-      aiUdpPort: 9600,
-      wsPort: 8787,
-      telegramBotToken: 'bot-token',
-      telegramChatId: '-100123',
+    await bridge.relay({
+      type: 'light_control',
+      command: 'on',
+      timestamp: '2026-03-27T10:00:00+09:00',
+    });
+    await bridge.relay({
+      type: 'light_control',
+      command: 'on',
+      timestamp: '2026-03-27T10:00:01+09:00',
+    });
+    await bridge.relay({
+      type: 'light_control',
+      command: 'off',
+      timestamp: '2026-03-27T10:00:02+09:00',
     });
 
-    const aiMessageHandler = aiUdpSocket.on.mock.calls.find(([eventName]) => eventName === 'message')[1];
-    await aiMessageHandler(
-      Buffer.from(
-        JSON.stringify({
-          sourceID: 'sangju_cam2_gpu1_20260324_041116',
-          top_event_ko: '경고: 충돌 위험 매우높음: 작업자-중장비 초근접',
-          combined_ko: '현장 상황: 현재 경고 발생(최고: RISK). 주요 알림: 경고: 충돌 위험 매우높음: 작업자-중장비 초근접',
-          objects: [
-            { track_id: 21, label: 'person' },
-            { track_id: 6, label: 'machinery' },
-          ],
-          event_object_groups: [
-            {
-              event: {
-                level: 'RISK',
-                severity: 4,
-              },
-            },
-          ],
-          image_jpeg_base64: Buffer.from('fake-image').toString('base64'),
-        })
-      ),
-      { address: '127.0.0.1', port: 12000 }
-    );
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toContain('"command":"off"');
+  });
 
-    expect(sendTelegramAlert).toHaveBeenCalledTimes(1);
-    expect(sendTelegramAlert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: '-100123',
-        botToken: 'bot-token',
-        caption: expect.stringContaining('RISK'),
-        photoBuffer: expect.any(Buffer),
+  it('rejects invalid control payloads without opening a tcp socket', async () => {
+    const createConnection = vi.fn();
+    const bridge = createLightControlBridge({
+      createConnection,
+      logger: { error: vi.fn(), info: vi.fn() },
+    });
+
+    await expect(
+      bridge.relay({
+        type: 'unknown',
+        command: 'blink',
+        timestamp: '2026-03-27T10:00:00+09:00',
       })
-    );
-  });
+    ).rejects.toThrow(/light_control/);
 
-  it('does not send telegram alerts for AI UDP payloads below RISK', async () => {
-    const logger = { info: vi.fn(), error: vi.fn() };
-    const sensorUdpSocket = { bind: vi.fn(), on: vi.fn(), close: vi.fn() };
-    const aiUdpSocket = { bind: vi.fn(), on: vi.fn(), close: vi.fn() };
-    const httpServer = { listen: vi.fn(), close: vi.fn() };
-    const wsServer = { on: vi.fn(), clients: new Set(), close: vi.fn() };
-    const sendTelegramAlert = vi.fn().mockResolvedValue(undefined);
-
-    const server = createSensorBridgeServer({
-      createUdpSocket: vi.fn()
-        .mockReturnValueOnce(sensorUdpSocket)
-        .mockReturnValueOnce(aiUdpSocket),
-      createHttpServer: () => httpServer,
-      createWebSocketServer: () => wsServer,
-      createTelegramAlertSender: () => sendTelegramAlert,
-      logger,
-    });
-
-    server.start({
-      udpHost: '0.0.0.0',
-      udpPort: 9500,
-      aiUdpPort: 9600,
-      wsPort: 8787,
-      telegramBotToken: 'bot-token',
-      telegramChatId: '-100123',
-    });
-
-    const aiMessageHandler = aiUdpSocket.on.mock.calls.find(([eventName]) => eventName === 'message')[1];
-    await aiMessageHandler(
-      Buffer.from(
-        JSON.stringify({
-          sourceID: 'sangju_cam2_gpu1_20260324_041116',
-          top_event_ko: '주의: 거리 근접',
-          event_object_groups: [
-            {
-              event: {
-                level: 'CAUTION',
-                severity: 2,
-              },
-            },
-          ],
-        })
-      ),
-      { address: '127.0.0.1', port: 12000 }
-    );
-
-    expect(sendTelegramAlert).not.toHaveBeenCalled();
+    expect(createConnection).not.toHaveBeenCalled();
   });
 });
 
@@ -403,6 +383,261 @@ describe('createRtspControlHandlers', () => {
   });
 });
 
+describe('createBridgeHttpHandler telegram endpoints', () => {
+  it('returns saved telegram settings and syncs known chats on request', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        result: [
+          {
+            update_id: 1,
+            message: {
+              chat: {
+                id: 8477727287,
+                type: 'private',
+                first_name: '기현',
+                last_name: '홍',
+              },
+            },
+          },
+        ],
+      }),
+    });
+
+    const handler = createBridgeHttpHandler({
+      logger: { error: vi.fn() },
+      rtspManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getState: vi.fn(),
+      },
+      telegramSettingsStore: createTelegramSettingsStoreMock({
+        botToken: 'bot-token',
+        chatIds: ['8477727287'],
+        autoSync: true,
+        knownChats: [
+          {
+            id: '8477727287',
+            type: 'private',
+            title: '기현 홍',
+            selected: true,
+          },
+        ],
+      }),
+      createTelegramChatRegistry: () => createTelegramChatRegistry({ fetchImpl, logger: { error: vi.fn() } }),
+      wsPort: 8787,
+    });
+
+    const getResponse = { writeHead: vi.fn(), end: vi.fn() };
+    await handler({ method: 'GET', url: '/telegram/settings' }, getResponse);
+    expect(JSON.parse(getResponse.end.mock.calls[0][0])).toMatchObject({
+      botTokenConfigured: true,
+      chatIds: ['8477727287'],
+      autoSync: true,
+      sensorAlertCooldownMs: 5000,
+    });
+
+    const syncResponse = { writeHead: vi.fn(), end: vi.fn() };
+    await handler(
+      {
+        method: 'POST',
+        url: '/telegram/chats/sync',
+        [Symbol.asyncIterator]: async function* () {},
+      },
+      syncResponse
+    );
+
+    const syncPayload = JSON.parse(syncResponse.end.mock.calls[0][0]);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(syncPayload.knownChats).toEqual([
+      expect.objectContaining({
+        id: '8477727287',
+        type: 'private',
+        title: '기현 홍',
+        selected: true,
+      }),
+    ]);
+  });
+
+  it('accepts string cooldown payloads and normalizes them before saving', async () => {
+    const telegramSettingsStore = createTelegramSettingsStoreMock({
+      botToken: 'bot-token',
+      chatIds: ['8477727287'],
+      autoSync: true,
+      sensorAlertCooldownMs: 5000,
+    });
+
+    const handler = createBridgeHttpHandler({
+      logger: { error: vi.fn() },
+      rtspManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getState: vi.fn(),
+      },
+      telegramSettingsStore,
+      wsPort: 8787,
+    });
+
+    const response = { writeHead: vi.fn(), end: vi.fn() };
+    await handler(
+      {
+        method: 'POST',
+        url: '/telegram/settings',
+        [Symbol.asyncIterator]: async function* () {
+          yield Buffer.from(
+            JSON.stringify({
+              sensorAlertCooldownMs: '45000',
+            })
+          );
+        },
+      },
+      response
+    );
+
+    expect(telegramSettingsStore.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sensorAlertCooldownMs: 45000,
+      })
+    );
+    expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({
+      sensorAlertCooldownMs: 45000,
+    });
+  });
+
+  it('relays sensor danger snapshots to the telegram sender pipeline', async () => {
+    const relaySensorSnapshotAlert = vi.fn().mockResolvedValue({
+      shouldSend: true,
+      delivered: true,
+    });
+
+    const handler = createBridgeHttpHandler({
+      logger: { error: vi.fn() },
+      rtspManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getState: vi.fn(),
+      },
+      telegramSettingsStore: createTelegramSettingsStoreMock({
+        botToken: 'bot-token',
+        chatIds: ['8477727287'],
+        autoSync: true,
+      }),
+      relaySensorSnapshotAlert,
+      wsPort: 8787,
+    });
+
+    const response = { writeHead: vi.fn(), end: vi.fn() };
+    await handler(
+      {
+        method: 'POST',
+        url: '/telegram/alerts/sensor',
+        [Symbol.asyncIterator]: async function* () {
+          yield Buffer.from(
+            JSON.stringify({
+              type: 'frontend_state',
+              timestamp: '2026-03-26T18:26:42.148+09:00',
+              system: {
+                sensor_server_online: true,
+                zone_rule: { caution_distance_m: 5, danger_distance_m: 3 },
+              },
+              workers: [
+                {
+                  tag_id: 1,
+                  name: 'worker_1',
+                  approved: true,
+                  connected: true,
+                  x: -0.68,
+                  y: 1.41,
+                  distance_m: 1.57,
+                  zone_status: 'danger',
+                  is_warning: true,
+                  is_emergency: true,
+                  last_update: '2026-03-26T18:26:42.158+09:00',
+                },
+              ],
+            })
+          );
+        },
+      },
+      response
+    );
+
+    expect(relaySensorSnapshotAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'frontend_state',
+        workers: [
+          expect.objectContaining({
+            zone_status: 'danger',
+            is_emergency: true,
+          }),
+        ],
+      })
+    );
+    expect(response.writeHead).toHaveBeenCalledWith(
+      200,
+      expect.objectContaining({ 'Content-Type': 'application/json; charset=utf-8' })
+    );
+    expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({
+      shouldSend: true,
+      delivered: true,
+    });
+  });
+
+  it('relays cctv risk events to the telegram sender pipeline', async () => {
+    const relayCctvAlert = vi.fn().mockResolvedValue({
+      shouldSend: true,
+      delivered: true,
+      level: 'RISK',
+    });
+
+    const handler = createBridgeHttpHandler({
+      logger: { error: vi.fn() },
+      rtspManager: {
+        start: vi.fn(),
+        stop: vi.fn(),
+        getState: vi.fn(),
+      },
+      telegramSettingsStore: createTelegramSettingsStoreMock({
+        botToken: 'bot-token',
+        chatIds: ['8477727287'],
+        autoSync: true,
+      }),
+      relayCctvAlert,
+      wsPort: 8787,
+    });
+
+    const response = { writeHead: vi.fn(), end: vi.fn() };
+    await handler(
+      {
+        method: 'POST',
+        url: '/telegram/alerts/cctv',
+        [Symbol.asyncIterator]: async function* () {
+          yield Buffer.from(
+            JSON.stringify({
+              source_id: 'cam1',
+              top_event_ko: '경고: 작업자 접근',
+              event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+            })
+          );
+        },
+      },
+      response
+    );
+
+    expect(relayCctvAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_id: 'cam1',
+      })
+    );
+    expect(JSON.parse(response.end.mock.calls[0][0])).toMatchObject({
+      shouldSend: true,
+      delivered: true,
+      level: 'RISK',
+    });
+  });
+});
+
 describe('createAiAlertMessage', () => {
   it('builds a telegram photo payload from ai udp packets with risk events', () => {
     const result = createAiAlertMessage(
@@ -457,6 +692,43 @@ describe('createAiAlertMessage', () => {
 
     expect(result.shouldSend).toBe(false);
     expect(result.photoBuffer).toBeNull();
+  });
+});
+
+describe('createSensorAlertMessage', () => {
+  it('returns a text alert when workers are in warning or emergency state', () => {
+    const result = createSensorAlertMessage(
+      Buffer.from(
+        JSON.stringify({
+          type: 'frontend_state',
+          timestamp: '2026-03-22T20:30:15.120+09:00',
+          system: {
+            sensor_server_online: true,
+            zone_rule: { caution_distance_m: 5, danger_distance_m: 3 },
+          },
+          workers: [
+            {
+              tag_id: 1,
+              name: 'worker_1',
+              approved: false,
+              connected: true,
+              x: 1,
+              y: 2,
+              distance_m: 1.51,
+              zone_status: 'danger',
+              is_warning: true,
+              is_emergency: true,
+              last_update: '2026-03-22T20:30:15.080+09:00',
+            },
+          ],
+        })
+      )
+    );
+
+    expect(result.shouldSend).toBe(true);
+    expect(result.photoBuffer).toBeNull();
+    expect(result.caption).toContain('worker_1');
+    expect(result.caption).toContain('1.51m');
   });
 });
 

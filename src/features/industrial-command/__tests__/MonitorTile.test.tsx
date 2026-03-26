@@ -36,6 +36,7 @@ describe('MonitorTile', () => {
             eventsKo: ['작업자 접근'],
             imageSize: [1920, 1080],
             overlayTrackIds: [7],
+            relationTrackIds: [7, 8],
             alertTier: 'risk',
             highlight: { personTrackId: 7, machineryTrackId: 8, label: 'DANGER', tone: 'red' },
             zoneName: '굴착기 구역 A',
@@ -56,6 +57,7 @@ describe('MonitorTile', () => {
             eventsKo: ['작업자 접근'],
             imageSize: [1920, 1080],
             overlayTrackIds: [7],
+            relationTrackIds: [7, 8],
             alertTier: 'risk',
             highlight: { personTrackId: 7, machineryTrackId: 8, label: 'DANGER', tone: 'red' },
             zoneName: '굴착기 구역 A',
@@ -75,7 +77,7 @@ describe('MonitorTile', () => {
     expect(within(tile).getByText('MACHINERY #8')).toBeInTheDocument();
   });
 
-  it('renders the relation-highlighted person box in high-contrast red', () => {
+  it('renders every relation-target object in high-contrast red during alerts', () => {
     const { container } = render(
       <MonitorTile
         bboxVisible
@@ -108,6 +110,7 @@ describe('MonitorTile', () => {
             eventsKo: ['작업자 접근'],
             imageSize: [1920, 1080],
             overlayTrackIds: [7],
+            relationTrackIds: [7, 8],
             alertTier: 'risk',
             highlight: { personTrackId: 7, machineryTrackId: 8, label: 'DANGER', tone: 'red' },
             zoneName: '굴착기 구역 A',
@@ -128,6 +131,7 @@ describe('MonitorTile', () => {
             eventsKo: ['작업자 접근'],
             imageSize: [1920, 1080],
             overlayTrackIds: [7],
+            relationTrackIds: [7, 8],
             alertTier: 'risk',
             highlight: { personTrackId: 7, machineryTrackId: 8, label: 'DANGER', tone: 'red' },
             zoneName: '굴착기 구역 A',
@@ -142,7 +146,7 @@ describe('MonitorTile', () => {
       />
     );
 
-    const redLabelRect = container.querySelector('rect[fill="#ff3b30"]');
-    expect(redLabelRect).toBeTruthy();
+    const redLabelRects = container.querySelectorAll('rect[fill="#ff3b30"]');
+    expect(redLabelRects).toHaveLength(2);
   });
 });

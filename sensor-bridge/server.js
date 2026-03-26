@@ -1,11 +1,15 @@
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
-import dgram from 'node:dgram';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 
 const LOG_DIR_URL = new URL('../runtime-logs/', import.meta.url);
 const RTSP_FRAME_DIR_URL = new URL('../runtime-rtsp/', import.meta.url);
+const CONFIG_DIR_PATH = 'runtime-config';
+const TELEGRAM_SETTINGS_FILE_PATH = `${CONFIG_DIR_PATH}/telegram-settings.json`;
+const LIGHT_CONTROL_HOST = '192.168.1.7';
+const LIGHT_CONTROL_PORT = 8888;
 const AI_ALERT_LEVEL_PRIORITY = {
   INFO: 1,
   SAFE: 1,
@@ -56,6 +60,14 @@ function ensureOptionalNumber(value, label) {
   return ensureNumber(value, label);
 }
 
+function ensureLightControlCommand(value) {
+  if (value !== 'on' && value !== 'off') {
+    throw new Error('command must be on or off');
+  }
+
+  return value;
+}
+
 function ensureZoneStatus(value) {
   if (value !== 'safe' && value !== 'caution' && value !== 'danger') {
     throw new Error('zone_status must be safe, caution, or danger');
@@ -91,6 +103,20 @@ function getCorsHeaders() {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Private-Network': 'true',
+  };
+}
+
+function validateLightControlPayload(payload) {
+  const root = ensureObject(payload, 'payload');
+  const type = ensureString(root.type, 'type');
+  if (type !== 'light_control') {
+    throw new Error('type must be light_control');
+  }
+
+  return {
+    type,
+    command: ensureLightControlCommand(root.command),
+    timestamp: ensureString(root.timestamp, 'timestamp'),
   };
 }
 
@@ -311,6 +337,23 @@ function formatAlertTimestamp(reportWallTsMs) {
   }).format(new Date(reportWallTsMs));
 }
 
+function formatIsoTimestamp(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('ko-KR', {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+    timeZone: 'Asia/Seoul',
+  }).format(date);
+}
+
 function decodeBase64Image(value) {
   if (typeof value !== 'string' || !value.trim()) {
     return null;
@@ -367,6 +410,470 @@ export function createAiAlertMessage(buffer) {
     photoBuffer: decodeBase64Image(root.image_jpeg_base64),
     level: highestEvent.level,
     sourceId: typeof root.sourceID === 'string' ? root.sourceID : null,
+  };
+}
+
+export function createLightControlBridge({
+  host = LIGHT_CONTROL_HOST,
+  port = LIGHT_CONTROL_PORT,
+  createConnection = net.createConnection,
+  logger = console,
+} = {}) {
+  let lastCommand = null;
+
+  return {
+    async relay(payload) {
+      const validatedPayload = validateLightControlPayload(payload);
+      if (validatedPayload.command === lastCommand) {
+        return {
+          delivered: false,
+          deduplicated: true,
+          command: validatedPayload.command,
+        };
+      }
+
+      await new Promise((resolve, reject) => {
+        const socket = createConnection({ host, port });
+        let settled = false;
+
+        const settle = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          callback(value);
+        };
+
+        socket.once?.('error', (error) => {
+          logger.error('failed to send light control command', error);
+          settle(reject, error);
+        });
+        socket.once?.('connect', () => {
+          socket.write(JSON.stringify(validatedPayload), (error) => {
+            if (error) {
+              settle(reject, error);
+              return;
+            }
+            socket.end();
+            settle(resolve);
+          });
+        });
+      });
+
+      lastCommand = validatedPayload.command;
+      return {
+        delivered: true,
+        deduplicated: false,
+        command: validatedPayload.command,
+      };
+    },
+  };
+}
+
+export function attachLightControlWebSocketServer({
+  httpServer,
+  lightControlBridge,
+  logger = console,
+  path = '/ws/light-control',
+  createWebSocketServer = (options) => new WebSocketServer(options),
+} = {}) {
+  if (!httpServer || !lightControlBridge) {
+    return { close() {} };
+  }
+
+  const webSocketServer = createWebSocketServer({ noServer: true });
+
+  httpServer.on?.('upgrade', (request, socket, head) => {
+    const requestUrl = new URL(request.url || '/', 'http://localhost');
+    if (requestUrl.pathname !== path) {
+      socket.destroy();
+      return;
+    }
+
+    webSocketServer.handleUpgrade(request, socket, head, (client) => {
+      webSocketServer.emit('connection', client, request);
+    });
+  });
+
+  webSocketServer.on('connection', (client) => {
+    client.on('message', async (raw) => {
+      try {
+        const payload = JSON.parse(String(raw));
+        const result = await lightControlBridge.relay(payload);
+        client.send(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        logger.error('light control websocket request failed', error);
+        client.send(
+          JSON.stringify({
+            ok: false,
+            error: error instanceof Error ? error.message : 'light_control_failed',
+          })
+        );
+      }
+    });
+  });
+
+  return {
+    close() {
+      webSocketServer.close();
+    },
+  };
+}
+
+function parseTelegramChatIds(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      value
+        .split(/[,\s]+/)
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function sanitizeTelegramCooldown(value, fallback = 5000) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.round(value));
+}
+
+function parseTelegramCooldownInput(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeTelegramKnownChat(entry, selectedChatIds = []) {
+  const record = ensureObject(entry, 'telegram_known_chat');
+  const id = ensureString(String(record.id), 'telegram_known_chat.id');
+  const type = typeof record.type === 'string' && record.type.trim() ? record.type.trim() : 'unknown';
+  const title = typeof record.title === 'string' && record.title.trim() ? record.title.trim() : id;
+
+  return {
+    id,
+    type,
+    title,
+    selected: selectedChatIds.includes(id),
+  };
+}
+
+function createDefaultTelegramSettings(overrides = {}) {
+  const selectedChatIds = Array.isArray(overrides.chatIds) ? overrides.chatIds.map(String) : [];
+  const knownChatsInput = Array.isArray(overrides.knownChats) ? overrides.knownChats : [];
+
+  return {
+    botToken: typeof overrides.botToken === 'string' ? overrides.botToken.trim() : '',
+    chatIds: Array.from(new Set(selectedChatIds.filter(Boolean))),
+    autoSync: typeof overrides.autoSync === 'boolean' ? overrides.autoSync : true,
+    sensorAlertCooldownMs: sanitizeTelegramCooldown(overrides.sensorAlertCooldownMs, 5000),
+    knownChats: knownChatsInput.map((entry) => normalizeTelegramKnownChat(entry, selectedChatIds)),
+  };
+}
+
+function maskTelegramBotToken(botToken) {
+  if (typeof botToken !== 'string' || !botToken.trim()) {
+    return '';
+  }
+
+  const token = botToken.trim();
+  if (token.length <= 8) {
+    return '*'.repeat(token.length);
+  }
+
+  return `${token.slice(0, 4)}${'*'.repeat(Math.max(4, token.length - 8))}${token.slice(-4)}`;
+}
+
+function buildTelegramChatTitle(chat) {
+  if (!chat || typeof chat !== 'object') {
+    return 'Unknown chat';
+  }
+
+  if (typeof chat.title === 'string' && chat.title.trim()) {
+    return chat.title.trim();
+  }
+
+  const names = [chat.first_name, chat.last_name]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => value.trim());
+
+  if (names.length > 0) {
+    return names.join(' ');
+  }
+
+  if (typeof chat.username === 'string' && chat.username.trim()) {
+    return `@${chat.username.trim()}`;
+  }
+
+  return String(chat.id ?? 'Unknown chat');
+}
+
+function extractTelegramChatId(update) {
+  const candidates = [
+    update?.message?.chat?.id,
+    update?.edited_message?.chat?.id,
+    update?.channel_post?.chat?.id,
+    update?.edited_channel_post?.chat?.id,
+    update?.my_chat_member?.chat?.id,
+    update?.chat_member?.chat?.id,
+    update?.chat_join_request?.chat?.id,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' || typeof candidate === 'string') {
+      return String(candidate);
+    }
+  }
+
+  return null;
+}
+
+function extractTelegramChat(update) {
+  const candidates = [
+    update?.message?.chat,
+    update?.edited_message?.chat,
+    update?.channel_post?.chat,
+    update?.edited_channel_post?.chat,
+    update?.my_chat_member?.chat,
+    update?.chat_member?.chat,
+    update?.chat_join_request?.chat,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && (typeof candidate.id === 'number' || typeof candidate.id === 'string')) {
+      return {
+        id: String(candidate.id),
+        type: typeof candidate.type === 'string' && candidate.type.trim() ? candidate.type.trim() : 'unknown',
+        title: buildTelegramChatTitle(candidate),
+      };
+    }
+  }
+
+  return null;
+}
+
+export function createTelegramChatRegistry({
+  initialChatIds = [],
+  fetchImpl = fetch,
+  logger = console,
+} = {}) {
+  const chatIds = new Set(initialChatIds.map((entry) => String(entry).trim()).filter(Boolean));
+  const knownChats = new Map();
+  let nextOffset = 0;
+
+  return {
+    async sync(botToken) {
+      if (!botToken) {
+        return {
+          chatIds: Array.from(chatIds),
+          knownChats: Array.from(knownChats.values()),
+        };
+      }
+
+      try {
+        const response = await fetchImpl(
+          `https://api.telegram.org/bot${botToken}/getUpdates?offset=${nextOffset}&timeout=0`,
+          {
+            method: 'GET',
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`telegram getUpdates failed with status ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const updates = Array.isArray(payload?.result) ? payload.result : [];
+        let maxUpdateId = nextOffset - 1;
+
+        for (const update of updates) {
+          const chat = extractTelegramChat(update);
+          if (chat) {
+            chatIds.add(chat.id);
+            knownChats.set(chat.id, chat);
+          }
+
+          if (typeof update?.update_id === 'number') {
+            maxUpdateId = Math.max(maxUpdateId, update.update_id);
+          }
+        }
+
+        if (maxUpdateId >= nextOffset) {
+          nextOffset = maxUpdateId + 1;
+        }
+      } catch (error) {
+        logger.error('failed to sync telegram chats', error);
+      }
+
+      return {
+        chatIds: Array.from(chatIds),
+        knownChats: Array.from(knownChats.values()),
+      };
+    },
+
+    getChatIds() {
+      return Array.from(chatIds);
+    },
+
+    getKnownChats() {
+      return Array.from(knownChats.values());
+    },
+  };
+}
+
+export function createTelegramSettingsStore({
+  settingsFileUrl = TELEGRAM_SETTINGS_FILE_PATH,
+  initialSettings = {},
+  mkdirImpl = mkdir,
+  readFileImpl = readFile,
+  writeFileImpl = writeFile,
+  logger = console,
+} = {}) {
+  let settings = createDefaultTelegramSettings(initialSettings);
+  let readyPromise = null;
+
+  async function save() {
+    await mkdirImpl(CONFIG_DIR_PATH, { recursive: true });
+    await writeFileImpl(settingsFileUrl, JSON.stringify(settings, null, 2), 'utf8');
+  }
+
+  return {
+    async initialize() {
+      if (!readyPromise) {
+        readyPromise = (async () => {
+          try {
+            const raw = await readFileImpl(settingsFileUrl, 'utf8');
+            const parsed = JSON.parse(raw);
+            settings = createDefaultTelegramSettings({
+              ...initialSettings,
+              ...parsed,
+            });
+          } catch (error) {
+            if (error?.code !== 'ENOENT') {
+              logger.error('failed to load telegram settings', error);
+            }
+            settings = createDefaultTelegramSettings(initialSettings);
+          }
+
+          await save();
+          return settings;
+        })();
+      }
+
+      await readyPromise;
+      return this.getPublicSettings();
+    },
+
+    async waitUntilReady() {
+      if (!readyPromise) {
+        await this.initialize();
+        return;
+      }
+
+      await readyPromise;
+    },
+
+    getSettings() {
+      return {
+        ...settings,
+        chatIds: [...settings.chatIds],
+        knownChats: settings.knownChats.map((entry) => ({ ...entry })),
+      };
+    },
+
+    getPublicSettings() {
+      return {
+        botTokenConfigured: Boolean(settings.botToken),
+        botTokenMasked: maskTelegramBotToken(settings.botToken),
+        chatIds: [...settings.chatIds],
+        autoSync: settings.autoSync,
+        sensorAlertCooldownMs: settings.sensorAlertCooldownMs,
+        knownChats: settings.knownChats.map((entry) => ({
+          ...entry,
+          selected: settings.chatIds.includes(entry.id),
+        })),
+      };
+    },
+
+    async update(nextPartial) {
+      const nextSettings = createDefaultTelegramSettings({
+        ...settings,
+        ...nextPartial,
+        botToken:
+          typeof nextPartial?.botToken === 'string'
+            ? nextPartial.botToken.trim() || settings.botToken
+            : settings.botToken,
+      });
+      settings = nextSettings;
+      await save();
+      return this.getPublicSettings();
+    },
+
+    async replaceKnownChats(nextKnownChats) {
+      settings = createDefaultTelegramSettings({
+        ...settings,
+        knownChats: nextKnownChats,
+      });
+      await save();
+      return this.getPublicSettings();
+    },
+  };
+}
+
+function buildSensorAlertCaption(root, riskyWorkers) {
+  const timestamp = formatIsoTimestamp(root.timestamp);
+  const lines = ['[굴착기 센서 위험 알림]'];
+
+  if (timestamp) {
+    lines.push(`시간: ${timestamp}`);
+  }
+
+  lines.push(`위험 작업자 수: ${riskyWorkers.length}명`);
+  lines.push(
+    ...riskyWorkers.slice(0, 5).map((worker) => {
+      const flags = [];
+      if (worker.is_emergency) flags.push('EMERGENCY');
+      if (!worker.is_emergency && worker.is_warning) flags.push('WARNING');
+      flags.push(worker.zone_status.toUpperCase());
+      return `- ${worker.name} (#${worker.tag_id}) ${worker.distance_m.toFixed(2)}m / ${flags.join(' · ')}`;
+    })
+  );
+
+  return lines.join('\n');
+}
+
+export function createSensorAlertMessage(buffer) {
+  const raw = buffer.toString('utf8').trim();
+  const root = JSON.parse(raw || '{}');
+  const payload = validateFrontendStatePayload(root);
+  const riskyWorkers = payload.workers.filter(
+    (worker) => worker.is_warning || worker.is_emergency || worker.zone_status === 'danger'
+  );
+
+  if (riskyWorkers.length === 0) {
+    return {
+      shouldSend: false,
+      caption: '',
+      photoBuffer: null,
+    };
+  }
+
+  return {
+    shouldSend: true,
+    caption: buildSensorAlertCaption(payload, riskyWorkers),
+    photoBuffer: null,
   };
 }
 
@@ -572,10 +1079,94 @@ export function createRtspControlHandlers({ manager, logger = console, baseUrl =
   };
 }
 
-export function createBridgeHttpHandler({ logger = console, rtspManager, wsPort = 8787, rtspFrameDirUrl = RTSP_FRAME_DIR_URL } = {}) {
+export function createBridgeHttpHandler({
+  logger = console,
+  rtspManager,
+  wsPort = 8787,
+  rtspFrameDirUrl = RTSP_FRAME_DIR_URL,
+  telegramSettingsStore,
+  createTelegramChatRegistry: createTelegramChatRegistryImpl = createTelegramChatRegistry,
+  relaySensorSnapshotAlert,
+  relayCctvAlert,
+} = {}) {
   const logHandler = createLogRequestHandler({ logger });
   const baseUrl = `http://localhost:${wsPort}`;
   const rtspHandler = createRtspControlHandlers({ manager: rtspManager, logger, baseUrl });
+  const telegramChatRegistry = createTelegramChatRegistryImpl({ logger });
+
+  async function handleTelegramRequest(request, response, requestPath) {
+    if (!telegramSettingsStore) {
+      sendJson(response, 503, { error: 'telegram_settings_unavailable' });
+      return true;
+    }
+
+    await telegramSettingsStore.waitUntilReady?.();
+
+    if (request.method === 'GET' && requestPath === '/telegram/settings') {
+      sendJson(response, 200, telegramSettingsStore.getPublicSettings());
+      return true;
+    }
+
+    if (request.method === 'POST' && requestPath === '/telegram/settings') {
+      const payload = await readRequestJson(request);
+      const result = await telegramSettingsStore.update({
+        botToken: typeof payload.botToken === 'string' ? payload.botToken : undefined,
+        chatIds: Array.isArray(payload.chatIds) ? payload.chatIds.map(String) : undefined,
+        autoSync: typeof payload.autoSync === 'boolean' ? payload.autoSync : undefined,
+        sensorAlertCooldownMs: parseTelegramCooldownInput(payload.sensorAlertCooldownMs),
+      });
+      sendJson(response, 200, result);
+      return true;
+    }
+
+    if (request.method === 'POST' && requestPath === '/telegram/settings/recommended') {
+      const result = await telegramSettingsStore.update({
+        autoSync: true,
+        sensorAlertCooldownMs: 5000,
+      });
+      sendJson(response, 200, result);
+      return true;
+    }
+
+    if (request.method === 'POST' && requestPath === '/telegram/chats/sync') {
+      const currentSettings = telegramSettingsStore.getSettings();
+      if (!currentSettings.botToken) {
+        sendJson(response, 400, { error: 'telegram_bot_token_required' });
+        return true;
+      }
+
+      const syncResult = await telegramChatRegistry.sync(currentSettings.botToken);
+      const result = await telegramSettingsStore.replaceKnownChats(syncResult.knownChats);
+      sendJson(response, 200, result);
+      return true;
+    }
+
+    if (request.method === 'POST' && requestPath === '/telegram/alerts/sensor') {
+      if (typeof relaySensorSnapshotAlert !== 'function') {
+        sendJson(response, 503, { error: 'telegram_sensor_alert_relay_unavailable' });
+        return true;
+      }
+
+      const payload = await readRequestJson(request);
+      const result = await relaySensorSnapshotAlert(payload);
+      sendJson(response, 200, result);
+      return true;
+    }
+
+    if (request.method === 'POST' && requestPath === '/telegram/alerts/cctv') {
+      if (typeof relayCctvAlert !== 'function') {
+        sendJson(response, 503, { error: 'telegram_cctv_alert_relay_unavailable' });
+        return true;
+      }
+
+      const payload = await readRequestJson(request);
+      const result = await relayCctvAlert(payload);
+      sendJson(response, 200, result);
+      return true;
+    }
+
+    return false;
+  }
 
   return async function handleHttpRequest(request, response) {
     const rawRequestUrl = request.url || '/';
@@ -609,97 +1200,163 @@ export function createBridgeHttpHandler({ logger = console, rtspManager, wsPort 
       return;
     }
 
+    if (requestPath.startsWith('/telegram/')) {
+      const handled = await handleTelegramRequest(request, response, requestPath);
+      if (handled) {
+        return;
+      }
+    }
+
     sendJson(response, 404, { error: 'not_found' });
   };
 }
 
 export function createSensorBridgeServer({
-  createUdpSocket = () => dgram.createSocket('udp4'),
   createHttpServer = (handler) => http.createServer(handler),
-  createWebSocketServer = ({ server }) => new WebSocketServer({ server }),
+  createLightControlBridge: createLightControlBridgeImpl = createLightControlBridge,
+  attachLightControlWebSocketServer: attachLightControlWebSocketServerImpl = attachLightControlWebSocketServer,
   createTelegramAlertSender: createTelegramAlertSenderImpl = createTelegramAlertSender,
+  createTelegramChatRegistry: createTelegramChatRegistryImpl = createTelegramChatRegistry,
+  createTelegramSettingsStore: createTelegramSettingsStoreImpl = createTelegramSettingsStore,
   createRtspStreamManager: createRtspStreamManagerImpl = createRtspStreamManager,
   logger = console,
 } = {}) {
-  const sensorUdpSocket = createUdpSocket('sensor');
-  const aiUdpSocket = createUdpSocket('ai');
-  let wsServer = null;
   let httpServer = null;
+  let lightControlWebSocketServer = null;
+  let lightControlBridge = null;
   let rtspManager = null;
+  let lastSensorAlertAt = 0;
+  let telegramSettingsStore = null;
 
   return {
     start({
-      udpHost = '0.0.0.0',
-      udpPort = 9500,
-      aiUdpHost = '0.0.0.0',
-      aiUdpPort = 9600,
       wsPort = 8787,
       telegramBotToken = '',
       telegramChatId = '',
+      sensorAlertCooldownMs = 5000,
     }) {
-      rtspManager = createRtspStreamManagerImpl({ logger });
-      httpServer = createHttpServer(createBridgeHttpHandler({ logger, rtspManager, wsPort }));
-      wsServer = createWebSocketServer({ server: httpServer });
+      telegramSettingsStore = createTelegramSettingsStoreImpl({
+        initialSettings: {
+          botToken: telegramBotToken,
+          chatIds: parseTelegramChatIds(telegramChatId),
+          autoSync: true,
+          sensorAlertCooldownMs,
+        },
+        logger,
+      });
+      telegramSettingsStore.initialize().catch((error) => {
+        logger.error('failed to initialize telegram settings store', error);
+      });
       const sendTelegramAlert = createTelegramAlertSenderImpl({ logger });
-
-      wsServer.on?.('connection', () => {
-        logger.info(`sensor bridge websocket client connected on ${wsPort}`);
+      const telegramChatRegistry = createTelegramChatRegistryImpl({
+        initialChatIds: parseTelegramChatIds(telegramChatId),
+        logger,
       });
 
-      sensorUdpSocket.on('message', (buffer, remoteInfo) => {
-        try {
-          const message = createBridgeMessage(buffer);
-          for (const client of wsServer.clients) {
-            if (client.readyState === 1) {
-              client.send(message);
-            }
-          }
-        } catch (error) {
-          logger.error(`invalid sensor packet from ${remoteInfo.address}:${remoteInfo.port}`, error);
+      async function sendAlertToTelegramChats(alert) {
+        await telegramSettingsStore.waitUntilReady?.();
+        const currentSettings = telegramSettingsStore.getSettings();
+        if (!currentSettings.botToken) {
+          logger.error('telegram alert skipped because bot token is missing');
+          return;
         }
-      });
 
-      aiUdpSocket.on('message', async (buffer, remoteInfo) => {
-        try {
-          const alert = createAiAlertMessage(buffer);
-          if (!alert.shouldSend) {
-            return;
+        let chatIds = currentSettings.chatIds;
+        if (currentSettings.autoSync) {
+          const syncResult = await telegramChatRegistry.sync(currentSettings.botToken);
+          chatIds = syncResult.chatIds.length > 0 ? Array.from(new Set([...chatIds, ...syncResult.chatIds])) : chatIds;
+          await telegramSettingsStore.replaceKnownChats(syncResult.knownChats);
+          if (chatIds.length > 0) {
+            await telegramSettingsStore.update({ chatIds });
           }
-
-          if (!telegramBotToken || !telegramChatId) {
-            logger.error('telegram alert skipped because bot token or chat id is missing');
-            return;
-          }
-
-          await sendTelegramAlert({
-            botToken: telegramBotToken,
-            chatId: telegramChatId,
-            caption: alert.caption,
-            photoBuffer: alert.photoBuffer,
-          });
-        } catch (error) {
-          logger.error(`invalid ai alert packet from ${remoteInfo.address}:${remoteInfo.port}`, error);
         }
-      });
 
-      sensorUdpSocket.bind(udpPort, udpHost, () => {
-        aiUdpSocket.bind(aiUdpPort, aiUdpHost, () => {
-          httpServer.listen?.(wsPort, '0.0.0.0', () => {
-            logger.info(`sensor bridge udp listening on ${udpHost}:${udpPort}`);
-            logger.info(`ai alert udp listening on ${aiUdpHost}:${aiUdpPort}`);
-            logger.info(`sensor bridge websocket listening on 0.0.0.0:${wsPort}`);
-            logger.info(`sensor bridge log api listening on http://0.0.0.0:${wsPort}/logs`);
-            logger.info(`rtsp control api listening on http://0.0.0.0:${wsPort}/rtsp/status`);
-          });
-        });
+        if (chatIds.length === 0) {
+          logger.error('telegram alert skipped because no chat ids are known yet');
+          return;
+        }
+
+        const results = await Promise.allSettled(
+          chatIds.map((chatId) =>
+            sendTelegramAlert({
+              botToken: currentSettings.botToken,
+              chatId,
+              caption: alert.caption,
+              photoBuffer: alert.photoBuffer,
+            })
+          )
+        );
+
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            logger.error('failed to send telegram alert', result.reason);
+          }
+        }
+      }
+
+      async function relaySensorSnapshotAlert(payload) {
+        const buffer = Buffer.from(JSON.stringify(payload));
+        const alert = createSensorAlertMessage(buffer);
+        const now = Date.now();
+        const currentSettings = telegramSettingsStore.getSettings();
+        const cooldownActive = now - lastSensorAlertAt < currentSettings.sensorAlertCooldownMs;
+
+        if (!alert.shouldSend) {
+          return { shouldSend: false, delivered: false, reason: 'not_risky' };
+        }
+
+        if (cooldownActive) {
+          return { shouldSend: true, delivered: false, reason: 'cooldown_active' };
+        }
+
+        lastSensorAlertAt = now;
+        await sendAlertToTelegramChats(alert);
+        return { shouldSend: true, delivered: true };
+      }
+
+      async function relayCctvAlert(payload) {
+        const buffer = Buffer.from(JSON.stringify(payload));
+        const alert = createAiAlertMessage(buffer);
+
+        if (!alert.shouldSend) {
+          return { shouldSend: false, delivered: false, reason: 'below_risk_threshold' };
+        }
+
+        await sendAlertToTelegramChats(alert);
+        return { shouldSend: true, delivered: true, sourceId: alert.sourceId, level: alert.level };
+      }
+
+      rtspManager = createRtspStreamManagerImpl({ logger });
+      lightControlBridge = createLightControlBridgeImpl({ logger });
+      httpServer = createHttpServer(
+        createBridgeHttpHandler({
+          logger,
+          rtspManager,
+          wsPort,
+          telegramSettingsStore,
+          createTelegramChatRegistry: createTelegramChatRegistryImpl,
+          relaySensorSnapshotAlert,
+          relayCctvAlert,
+        })
+      );
+      lightControlWebSocketServer = attachLightControlWebSocketServerImpl({
+        httpServer,
+        lightControlBridge,
+        logger,
+      });
+      httpServer.listen?.(wsPort, '0.0.0.0', () => {
+        logger.info(`sensor bridge api listening on http://0.0.0.0:${wsPort}`);
+        logger.info(`sensor bridge log api listening on http://0.0.0.0:${wsPort}/logs`);
+        logger.info(`rtsp control api listening on http://0.0.0.0:${wsPort}/rtsp/status`);
+        logger.info(`light control websocket listening on ws://0.0.0.0:${wsPort}/ws/light-control`);
+        logger.info(`telegram sensor relay api listening on http://0.0.0.0:${wsPort}/telegram/alerts/sensor`);
+        logger.info(`telegram cctv relay api listening on http://0.0.0.0:${wsPort}/telegram/alerts/cctv`);
       });
     },
 
     stop() {
-      sensorUdpSocket.close();
-      aiUdpSocket.close();
       rtspManager?.stop?.();
-      wsServer?.close();
+      lightControlWebSocketServer?.close?.();
       httpServer?.close();
     },
   };
@@ -713,12 +1370,9 @@ function toPort(value, fallback) {
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const server = createSensorBridgeServer();
   server.start({
-    udpHost: process.env.SENSOR_UDP_HOST || '0.0.0.0',
-    udpPort: toPort(process.env.SENSOR_UDP_PORT, 9500),
-    aiUdpHost: process.env.AI_UDP_HOST || '0.0.0.0',
-    aiUdpPort: toPort(process.env.AI_UDP_PORT, 9600),
     wsPort: toPort(process.env.SENSOR_BRIDGE_WS_PORT, 8787),
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
     telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
+    sensorAlertCooldownMs: toPort(process.env.SENSOR_ALERT_COOLDOWN_MS, 5000),
   });
 }

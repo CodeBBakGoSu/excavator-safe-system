@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   extractJsonPayloadsFromText,
+  normalizeBBoxForImage,
   parseCameraKey,
   parseFramePayload,
   validateWsUrl,
@@ -11,6 +12,7 @@ import { parseFrontendStatePayload } from '../../../../frontend-state/frontendSt
 import type {
   FrontendStateConnectionStatus,
   FrontendStateSnapshot,
+  FrontendStateWorker,
 } from '../../../../frontend-state/frontendStateTypes';
 
 const AUTO_POPUP_MS = 2000;
@@ -18,10 +20,16 @@ const SENSOR_AUTO_POPUP_MS = AUTO_POPUP_MS + 1200;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
 const MAX_STREAM_LOGS = 200;
+const MAX_EVENT_FEED_ITEMS = 60;
 const WS_STORAGE_KEY = 'excavator-safe-system:cctv-poc-ws-url';
 const SENSOR_WS_STORAGE_KEY = 'excavator-safe-system:sensor-bridge-ws-url';
 const RTSP_CONTROL_API_STORAGE_KEY = 'excavator-safe-system:rtsp-control-api-url';
 const RTSP_URL_STORAGE_KEY = 'excavator-safe-system:rtsp-hls-url';
+const TELEGRAM_BOT_TOKEN_STORAGE_KEY = 'excavator-safe-system:telegram-bot-token';
+const TELEGRAM_CHAT_IDS_STORAGE_KEY = 'excavator-safe-system:telegram-chat-ids';
+const TELEGRAM_KNOWN_CHATS_STORAGE_KEY = 'excavator-safe-system:telegram-known-chats';
+const TELEGRAM_AUTO_SYNC_STORAGE_KEY = 'excavator-safe-system:telegram-auto-sync';
+const TELEGRAM_SENSOR_COOLDOWN_STORAGE_KEY = 'excavator-safe-system:telegram-sensor-cooldown-ms';
 const BBOX_VISIBLE_STORAGE_KEY = 'excavator-safe-system:bbox-visible';
 const OVERLAY_DISPLAY_MODE_STORAGE_KEY = 'excavator-safe-system:overlay-display-mode';
 const HAZARD_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:hazard-popup-duration-ms';
@@ -47,6 +55,7 @@ const EMPTY_FRAME: FrameSnapshot = {
   eventsKo: [],
   imageSize: null,
   overlayTrackIds: [],
+  relationTrackIds: [],
   alertTier: 'normal',
   highlight: null,
   zoneName: null,
@@ -93,6 +102,45 @@ export type HazardPopupSnapshot = {
   channelTitle: string;
   summary: string;
   runtime: ChannelRuntimeState;
+};
+
+export type EventFeedItem = {
+  id: string;
+  channelId: number;
+  channelLabel: string;
+  channelTitle: string;
+  alertTier: 'caution' | 'risk';
+  summary: string;
+  frameIndex: number | null;
+  objectCount: number;
+  sourceId: string;
+  timestamp: string;
+};
+
+export type TelegramKnownChat = {
+  id: string;
+  type: string;
+  title: string;
+  selected: boolean;
+};
+
+export type SensorGateState = 'no_sensor' | 'approved_nearest' | 'unapproved_nearest';
+export type EffectiveHazardState = 'safe' | 'hazardous';
+export type LightControlCommand = 'on' | 'off';
+export type LightControlReason =
+  | 'nearest_approved_sensor'
+  | 'nearest_unapproved_sensor'
+  | 'ai_only'
+  | 'idle';
+
+export type HazardControlState = {
+  nearestSensorWorker: FrontendStateWorker | null;
+  sensorGateState: SensorGateState;
+  effectiveHazardState: EffectiveHazardState;
+  popupBlocked: boolean;
+  popupReason: LightControlReason;
+  lightCommand: LightControlCommand;
+  selectedPopupChannelId: number | null;
 };
 
 type SocketConnectMode = 'manual' | 'retry';
@@ -167,6 +215,20 @@ function normalizeHttpApiBase(url: string, locationLike?: LocationLike) {
   }
 }
 
+function formatSecondsDraftFromMs(value: number) {
+  const seconds = value / 1000;
+  return Number.isInteger(seconds) ? String(seconds) : String(seconds);
+}
+
+function parseSecondsDraftToMs(value: string, fallback = 5000) {
+  const parsed = Number.parseFloat(value.trim());
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+
+  return Math.round(parsed * 1000);
+}
+
 export function getBridgeHttpBase(
   sensorBridgeUrl: string,
   sensorBridgeDraft: string,
@@ -208,6 +270,258 @@ export function getBridgeApiUrl(
   const base = getBridgeHttpBase(sensorBridgeUrl, sensorBridgeDraft, locationLike);
 
   if (shouldUseDevBridgeProxy(base, locationLike)) {
+    const params = new URLSearchParams({
+      path,
+      target: base,
+    });
+    return `/__bridge_proxy__?${params.toString()}`;
+  }
+
+  return `${base}${path}`;
+}
+
+export function getLightControlWsUrl(rtspControlApiBase: string) {
+  const base = new URL(rtspControlApiBase);
+  base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  base.pathname = '/ws/light-control';
+  base.search = '';
+  base.hash = '';
+  return base.toString();
+}
+
+function maskTelegramBotToken(botToken: string) {
+  const token = botToken.trim();
+  if (!token) return '';
+  if (token.length <= 8) return '*'.repeat(token.length);
+  return `${token.slice(0, 4)}${'*'.repeat(Math.max(4, token.length - 8))}${token.slice(-4)}`;
+}
+
+function buildTelegramChatTitle(chat: Record<string, unknown>) {
+  if (typeof chat.title === 'string' && chat.title.trim()) {
+    return chat.title.trim();
+  }
+
+  const names = [chat.first_name, chat.last_name]
+    .filter((value) => typeof value === 'string' && value.trim())
+    .map((value) => (value as string).trim());
+  if (names.length > 0) {
+    return names.join(' ');
+  }
+
+  if (typeof chat.username === 'string' && chat.username.trim()) {
+    return `@${chat.username.trim()}`;
+  }
+
+  return String(chat.id ?? 'Unknown chat');
+}
+
+function extractTelegramChat(update: Record<string, unknown>): TelegramKnownChat | null {
+  const record = update as {
+    message?: { chat?: Record<string, unknown> };
+    edited_message?: { chat?: Record<string, unknown> };
+    channel_post?: { chat?: Record<string, unknown> };
+    edited_channel_post?: { chat?: Record<string, unknown> };
+    my_chat_member?: { chat?: Record<string, unknown> };
+    chat_member?: { chat?: Record<string, unknown> };
+    chat_join_request?: { chat?: Record<string, unknown> };
+  };
+  const candidates = [
+    record.message?.chat,
+    record.edited_message?.chat,
+    record.channel_post?.chat,
+    record.edited_channel_post?.chat,
+    record.my_chat_member?.chat,
+    record.chat_member?.chat,
+    record.chat_join_request?.chat,
+  ];
+
+  for (const chat of candidates) {
+    if (!chat) continue;
+    const id = chat.id;
+    if (typeof id !== 'number' && typeof id !== 'string') continue;
+    return {
+      id: String(id),
+      type: typeof chat.type === 'string' && chat.type.trim() ? chat.type.trim() : 'unknown',
+      title: buildTelegramChatTitle(chat),
+      selected: false,
+    };
+  }
+
+  return null;
+}
+
+function buildTelegramBotApiUrl(botToken: string, method: string) {
+  return `https://api.telegram.org/bot${botToken}/${method}`;
+}
+
+function decodeBase64Image(base64Payload: string) {
+  const normalized = base64Payload.replace(/^data:image\/\w+;base64,/, '').trim();
+  const binary = atob(normalized);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: 'image/jpeg' });
+}
+
+function normalizeTelegramImageSource(imageSrc: string) {
+  const normalized = imageSrc.trim();
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized.startsWith('data:image/') ? normalized : `data:image/jpeg;base64,${normalized}`;
+}
+
+function shouldRenderTelegramBoxes(mode: OverlayDisplayMode, alertTier: ChannelRuntimeState['alertTier']) {
+  if (mode === 'always') return true;
+  if (mode === 'alert') return alertTier !== 'normal';
+  return alertTier === 'risk';
+}
+
+function getTelegramOverlayObjects(runtime: ChannelRuntimeState, mode: OverlayDisplayMode) {
+  const highlightTrackIds = new Set(runtime.visualFrame.overlayTrackIds);
+  const sourceObjects =
+    mode === 'always'
+      ? runtime.visualFrame.objects
+      : runtime.visualFrame.objects.filter((object) => object.trackId != null && highlightTrackIds.has(object.trackId));
+
+  return sourceObjects.map((object) => ({
+    object,
+    highlighted: object.trackId != null && highlightTrackIds.has(object.trackId),
+    relationHighlighted:
+      runtime.alertTier !== 'normal' &&
+      object.trackId != null &&
+      runtime.visualFrame.relationTrackIds.includes(object.trackId),
+  }));
+}
+
+async function loadImageElement(src: string) {
+  return await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('overlay image load failed'));
+    image.src = src;
+  });
+}
+
+async function renderTelegramOverlayPhoto(
+  imageSrc: string,
+  runtime: ChannelRuntimeState,
+  bboxVisible: boolean,
+  overlayDisplayMode: OverlayDisplayMode
+) {
+  const normalizedImageSrc = normalizeTelegramImageSource(imageSrc);
+
+  if (!normalizedImageSrc || !bboxVisible || !shouldRenderTelegramBoxes(overlayDisplayMode, runtime.alertTier)) {
+    return decodeBase64Image(normalizedImageSrc);
+  }
+
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (!context) {
+    return decodeBase64Image(imageSrc);
+  }
+
+  try {
+    const image = await loadImageElement(normalizedImageSrc);
+    const width = image.naturalWidth || runtime.imageNaturalSize?.[0] || runtime.visualFrame.imageSize?.[0] || 1920;
+    const height = image.naturalHeight || runtime.imageNaturalSize?.[1] || runtime.visualFrame.imageSize?.[1] || 1080;
+    canvas.width = width;
+    canvas.height = height;
+    context.drawImage(image, 0, 0, width, height);
+
+    const overlayObjects = getTelegramOverlayObjects(runtime, overlayDisplayMode);
+    context.textBaseline = 'middle';
+    context.font = '700 16px ui-monospace, SFMono-Regular, Menlo, monospace';
+
+    for (const { object, highlighted, relationHighlighted } of overlayObjects) {
+      const [x1, y1, x2, y2] = normalizeBBoxForImage(object.bbox, [width, height]);
+      const rectWidth = Math.max(0, x2 - x1);
+      const rectHeight = Math.max(0, y2 - y1);
+      const stroke = relationHighlighted ? '#ff3b30' : highlighted ? '#ffb4ab' : '#4b8eff';
+      const fill = relationHighlighted ? 'rgba(255, 59, 48, 0.2)' : highlighted ? 'rgba(255, 180, 171, 0.12)' : 'rgba(75, 142, 255, 0.12)';
+      const labelFill = relationHighlighted ? '#ff3b30' : stroke;
+      const labelText = relationHighlighted ? '#ffffff' : '#121416';
+      const label = `${(object.label || 'object').toUpperCase()} #${object.trackId ?? '--'}`;
+      const labelY = Math.max(10, y1 - 38);
+
+      context.fillStyle = fill;
+      context.strokeStyle = stroke;
+      context.lineWidth = 4;
+      context.beginPath();
+      context.roundRect(x1, y1, rectWidth, rectHeight, 12);
+      context.fill();
+      context.stroke();
+
+      context.fillStyle = labelFill;
+      context.beginPath();
+      context.roundRect(x1, labelY, 152, 32, 10);
+      context.fill();
+
+      context.fillStyle = labelText;
+      context.fillText(label, x1 + 12, labelY + 16);
+    }
+
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    return blob ?? decodeBase64Image(normalizedImageSrc);
+  } catch {
+    return decodeBase64Image(normalizedImageSrc);
+  }
+}
+
+function buildSensorTelegramCaption(snapshot: FrontendStateSnapshot) {
+  const riskyWorkers = snapshot.workers.filter(
+    (worker) =>
+      worker.approved === false &&
+      (worker.isWarning || worker.isEmergency || worker.zoneStatus === 'danger')
+  );
+  if (riskyWorkers.length === 0) {
+    return '';
+  }
+
+  const lines = ['[굴착기 센서 위험 알림]'];
+  if (snapshot.timestamp) {
+    lines.push(`시간: ${snapshot.timestamp}`);
+  }
+  lines.push(`위험 작업자 수: ${riskyWorkers.length}명`);
+  lines.push(
+    ...riskyWorkers.slice(0, 5).map((worker) => {
+      const flags = [];
+      if (worker.isEmergency) flags.push('EMERGENCY');
+      if (!worker.isEmergency && worker.isWarning) flags.push('WARNING');
+      flags.push(worker.zoneStatus.toUpperCase());
+      return `- ${worker.name} (#${worker.tagId}) ${worker.distanceM.toFixed(2)}m / ${flags.join(' · ')}`;
+    })
+  );
+  return lines.join('\n');
+}
+
+function buildCctvTelegramCaption(payload: Record<string, unknown>) {
+  const frameIndex = typeof payload.frame_index === 'number' ? payload.frame_index : null;
+  const topEvent = typeof payload.top_event_ko === 'string' ? payload.top_event_ko : '';
+  const combined = typeof payload.combined_ko === 'string' ? payload.combined_ko : '';
+  const sourceId = typeof payload.source_id === 'string' ? payload.source_id : 'unknown';
+  const zoneName = typeof payload.zone_name === 'string' ? payload.zone_name : '';
+
+  return [
+    '[굴착기 CCTV 위험 알림]',
+    zoneName ? `구역: ${zoneName}` : null,
+    `채널: ${sourceId}`,
+    frameIndex != null ? `프레임: ${frameIndex}` : null,
+    topEvent || combined || '위험 이벤트 감지',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function getLocalBridgeApiUrl(path: string, locationLike?: LocationLike) {
+  const currentLocation = locationLike ?? (typeof window !== 'undefined' ? window.location : undefined);
+  const protocol = currentLocation?.protocol === 'https:' ? 'https:' : 'http:';
+  const hostname = currentLocation?.hostname ?? 'localhost';
+  const base = `${protocol}//${hostname}:8787`;
+
+  if (shouldUseDevBridgeProxy(base, currentLocation)) {
     const params = new URLSearchParams({
       path,
       target: base,
@@ -305,6 +619,66 @@ function loadStoredSensorUrl(defaultValue = '') {
   return window.localStorage.getItem(SENSOR_WS_STORAGE_KEY)?.trim() || defaultValue;
 }
 
+function loadStoredTelegramBotToken(defaultValue = '') {
+  if (typeof window === 'undefined') return defaultValue;
+  return window.localStorage.getItem(TELEGRAM_BOT_TOKEN_STORAGE_KEY)?.trim() || defaultValue;
+}
+
+function loadStoredTelegramChatIds(defaultValue: string[] = []) {
+  if (typeof window === 'undefined') return defaultValue;
+  const raw = window.localStorage.getItem(TELEGRAM_CHAT_IDS_STORAGE_KEY);
+  if (!raw) return defaultValue;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+function loadStoredTelegramKnownChats(defaultValue: TelegramKnownChat[] = []) {
+  if (typeof window === 'undefined') return defaultValue;
+  const raw = window.localStorage.getItem(TELEGRAM_KNOWN_CHATS_STORAGE_KEY);
+  if (!raw) return defaultValue;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return defaultValue;
+    return parsed
+      .map((entry) =>
+        entry && typeof entry === 'object'
+          ? {
+              id: String((entry as { id?: unknown }).id ?? ''),
+              type: typeof (entry as { type?: unknown }).type === 'string' ? (entry as { type: string }).type : 'unknown',
+              title:
+                typeof (entry as { title?: unknown }).title === 'string'
+                  ? (entry as { title: string }).title
+                  : String((entry as { id?: unknown }).id ?? ''),
+              selected: Boolean((entry as { selected?: unknown }).selected),
+            }
+          : null
+      )
+      .filter((entry): entry is TelegramKnownChat => Boolean(entry?.id));
+  } catch {
+    return defaultValue;
+  }
+}
+
+function loadStoredTelegramAutoSync(defaultValue = true) {
+  if (typeof window === 'undefined') return defaultValue;
+  const raw = window.localStorage.getItem(TELEGRAM_AUTO_SYNC_STORAGE_KEY);
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return defaultValue;
+}
+
+function loadStoredTelegramSensorCooldown(defaultValue = 5000) {
+  if (typeof window === 'undefined') return defaultValue;
+  const raw = window.localStorage.getItem(TELEGRAM_SENSOR_COOLDOWN_STORAGE_KEY);
+  if (!raw) return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : defaultValue;
+}
+
 function loadStoredRtspUrl(defaultValue = '') {
   if (typeof window === 'undefined') return defaultValue;
   return window.localStorage.getItem(RTSP_URL_STORAGE_KEY)?.trim() || defaultValue;
@@ -374,6 +748,115 @@ function getFrameSummary(frame: FrameSnapshot) {
   return frame.topEventKo || frame.combinedKo || frame.eventsKo[0] || '실시간 위험 이벤트 대기';
 }
 
+function isRiskyUnapprovedWorker(worker: FrontendStateWorker) {
+  return worker.approved === false && (worker.isWarning || worker.isEmergency || worker.zoneStatus === 'danger');
+}
+
+function findNearestSensorWorker(sensorSnapshot: FrontendStateSnapshot | null) {
+  if (!sensorSnapshot || sensorSnapshot.workers.length === 0) {
+    return null;
+  }
+
+  return sensorSnapshot.workers.reduce<FrontendStateWorker | null>((nearest, worker) => {
+    if (!nearest) return worker;
+    if (worker.distanceM < nearest.distanceM) return worker;
+    return nearest;
+  }, null);
+}
+
+function getSensorGateState(sensorSnapshot: FrontendStateSnapshot | null): {
+  nearestSensorWorker: FrontendStateWorker | null;
+  sensorGateState: SensorGateState;
+} {
+  const nearestSensorWorker = findNearestSensorWorker(sensorSnapshot);
+  if (!nearestSensorWorker) {
+    return {
+      nearestSensorWorker: null,
+      sensorGateState: 'no_sensor',
+    };
+  }
+
+  return {
+    nearestSensorWorker,
+    sensorGateState: isRiskyUnapprovedWorker(nearestSensorWorker) ? 'unapproved_nearest' : 'approved_nearest',
+  };
+}
+
+export function selectHazardPopupChannelId(latestRiskChannelId: number | null, latestFrameChannelId: number | null) {
+  return latestRiskChannelId ?? latestFrameChannelId ?? null;
+}
+
+export function createSensorPopupRuntime(runtime: ChannelRuntimeState): ChannelRuntimeState {
+  const allTrackIds = runtime.latestFrame.objects
+    .map((object) => object.trackId)
+    .filter((trackId): trackId is number => trackId != null);
+
+  return {
+    ...runtime,
+    alertTier: runtime.alertTier === 'normal' ? 'risk' : runtime.alertTier,
+    latestFrame: {
+      ...runtime.latestFrame,
+      overlayTrackIds: allTrackIds,
+      relationTrackIds: [],
+    },
+    visualFrame: {
+      ...runtime.latestFrame,
+      overlayTrackIds: allTrackIds,
+      relationTrackIds: [],
+    },
+  };
+}
+
+export function deriveHazardControlState({
+  sensorSnapshot,
+  aiHazardDetected,
+  latestRiskChannelId,
+  latestFrameChannelId,
+}: {
+  sensorSnapshot: FrontendStateSnapshot | null;
+  aiHazardDetected: boolean;
+  latestRiskChannelId: number | null;
+  latestFrameChannelId: number | null;
+}): HazardControlState {
+  const { nearestSensorWorker, sensorGateState } = getSensorGateState(sensorSnapshot);
+
+  if (sensorGateState === 'approved_nearest') {
+    return {
+      nearestSensorWorker,
+      sensorGateState,
+      effectiveHazardState: 'safe',
+      popupBlocked: true,
+      popupReason: 'nearest_approved_sensor',
+      lightCommand: 'off',
+      selectedPopupChannelId: null,
+    };
+  }
+
+  if (sensorGateState === 'unapproved_nearest') {
+    return {
+      nearestSensorWorker,
+      sensorGateState,
+      effectiveHazardState: 'hazardous',
+      popupBlocked: false,
+      popupReason: 'nearest_unapproved_sensor',
+      lightCommand: 'on',
+      selectedPopupChannelId: selectHazardPopupChannelId(latestRiskChannelId, latestFrameChannelId),
+    };
+  }
+
+  return {
+    nearestSensorWorker,
+    sensorGateState,
+    effectiveHazardState: aiHazardDetected ? 'hazardous' : 'safe',
+    popupBlocked: false,
+    popupReason: aiHazardDetected ? 'ai_only' : 'idle',
+    lightCommand: aiHazardDetected ? 'on' : 'off',
+    selectedPopupChannelId: aiHazardDetected
+      ? selectHazardPopupChannelId(latestRiskChannelId, latestFrameChannelId)
+      : null,
+  };
+}
+
 function isImmediateSevereFrame(frame: FrameSnapshot) {
   return frame.highlight?.tone === 'red' || /매우높음|초근접/.test(frame.topEventKo);
 }
@@ -420,14 +903,31 @@ export interface IndustrialMonitorRuntime {
   focusedChannelId: number;
   popupChannelId: number | null;
   popupSnapshot: HazardPopupSnapshot | null;
+  nearestSensorWorker: FrontendStateWorker | null;
+  sensorGateState: SensorGateState;
+  effectiveHazardState: EffectiveHazardState;
+  latestRiskChannelId: number | null;
+  latestFrameChannelId: number | null;
   sensorConnectionStatus: FrontendStateConnectionStatus;
   sensorReconnectAttempt: number;
   sensorSettingsMessage: string | null;
   fieldStateMessage: string | null;
   sensorSnapshot: FrontendStateSnapshot | null;
   sensorPopupOpen: boolean;
+  telegramSettingsMessage: string | null;
+  telegramBotTokenConfigured: boolean;
+  telegramBotTokenMasked: string;
+  telegramBotTokenDraft: string;
+  telegramKnownChats: TelegramKnownChat[];
+  telegramSelectedChatIds: string[];
+  telegramAutoSync: boolean;
+  telegramSensorAlertCooldownMs: number;
+  telegramSensorCooldownDraft: string;
+  telegramSyncingChats: boolean;
+  telegramSavingSettings: boolean;
   sensorLogs: StreamLogEntry[];
   cctvLogs: StreamLogEntry[];
+  eventFeed: EventFeedItem[];
   logActionMessage: string | null;
   savingLogType: LogStreamType | null;
   updateWsDraft: (value: string) => void;
@@ -439,6 +939,10 @@ export interface IndustrialMonitorRuntime {
   updateHazardPopupDebounceMode: (value: HazardPopupDebounceMode) => void;
   setPopupDurationMs: (value: number) => void;
   setSensorPopupDurationMs: (value: number) => void;
+  updateTelegramBotTokenDraft: (value: string) => void;
+  updateTelegramChatSelection: (chatId: string, selected: boolean) => void;
+  updateTelegramAutoSync: (value: boolean) => void;
+  updateTelegramSensorCooldownDraft: (value: string) => void;
   focusChannel: (channelId: number) => void;
   connectSocket: (targetUrl: string, mode?: SocketConnectMode) => void;
   disconnectSocket: () => void;
@@ -450,6 +954,9 @@ export interface IndustrialMonitorRuntime {
   applyRtspUrl: () => void;
   startRtspStream: () => Promise<void>;
   stopRtspStream: () => Promise<void>;
+  refreshTelegramSettings: () => Promise<void>;
+  syncTelegramChats: () => Promise<void>;
+  applyTelegramSettings: () => Promise<void>;
   openChannelPopup: (channelId: number) => void;
   closeChannelPopup: () => void;
   openSensorSnapshotPreview: () => void;
@@ -494,8 +1001,34 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [fieldStateMessage, setFieldStateMessage] = useState<string | null>(null);
   const [sensorSnapshot, setSensorSnapshot] = useState<FrontendStateSnapshot | null>(null);
   const [sensorPopupOpen, setSensorPopupOpen] = useState(false);
+  const [telegramBotToken, setTelegramBotToken] = useState(() => loadStoredTelegramBotToken(''));
+  const [telegramSettingsMessage, setTelegramSettingsMessage] = useState<string | null>(null);
+  const [telegramBotTokenConfigured, setTelegramBotTokenConfigured] = useState(() =>
+    Boolean(loadStoredTelegramBotToken(''))
+  );
+  const [telegramBotTokenMasked, setTelegramBotTokenMasked] = useState(() =>
+    maskTelegramBotToken(loadStoredTelegramBotToken(''))
+  );
+  const [telegramBotTokenDraft, setTelegramBotTokenDraft] = useState('');
+  const [telegramSelectedChatIds, setTelegramSelectedChatIds] = useState<string[]>(() => loadStoredTelegramChatIds([]));
+  const [telegramKnownChats, setTelegramKnownChats] = useState<TelegramKnownChat[]>(() =>
+    loadStoredTelegramKnownChats([]).map((entry) => ({
+      ...entry,
+      selected: loadStoredTelegramChatIds([]).includes(entry.id),
+    }))
+  );
+  const [telegramAutoSync, setTelegramAutoSync] = useState(() => loadStoredTelegramAutoSync(true));
+  const [telegramSensorAlertCooldownMs, setTelegramSensorAlertCooldownMs] = useState(() =>
+    loadStoredTelegramSensorCooldown(5000)
+  );
+  const [telegramSensorCooldownDraft, setTelegramSensorCooldownDraft] = useState(() =>
+    formatSecondsDraftFromMs(loadStoredTelegramSensorCooldown(5000))
+  );
+  const [telegramSyncingChats, setTelegramSyncingChats] = useState(false);
+  const [telegramSavingSettings, setTelegramSavingSettings] = useState(false);
   const [sensorLogs, setSensorLogs] = useState<StreamLogEntry[]>([]);
   const [cctvLogs, setCctvLogs] = useState<StreamLogEntry[]>([]);
+  const [eventFeed, setEventFeed] = useState<EventFeedItem[]>([]);
   const [logActionMessage, setLogActionMessage] = useState<string | null>(null);
   const [savingLogType, setSavingLogType] = useState<LogStreamType | null>(null);
   const rtspControlApiBase = useMemo(
@@ -518,6 +1051,12 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const runtimeMapRef = useRef<Record<number, ChannelRuntimeState>>(createRuntimeMap());
   const manualCloseSocketsRef = useRef(new WeakSet<WebSocket>());
   const manualCloseSensorSocketsRef = useRef(new WeakSet<WebSocket>());
+  const telegramLastSensorAlertSentAtRef = useRef(0);
+  const latestRiskChannelIdRef = useRef<number | null>(null);
+  const latestFrameChannelIdRef = useRef<number | null>(null);
+  const lightControlWsRef = useRef<WebSocket | null>(null);
+  const lightControlQueueRef = useRef<string[]>([]);
+  const lastLightCommandSentRef = useRef<LightControlCommand | null>(null);
 
   const channelByCameraKey = useMemo(
     () =>
@@ -534,6 +1073,17 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     []
   );
 
+  const hazardControlState = useMemo(
+    () =>
+      deriveHazardControlState({
+        sensorSnapshot,
+        aiHazardDetected: popupSnapshot?.runtime.alertTier === 'risk',
+        latestRiskChannelId: latestRiskChannelIdRef.current,
+        latestFrameChannelId: latestFrameChannelIdRef.current,
+      }),
+    [popupSnapshot, sensorSnapshot]
+  );
+
   const appendCctvLog = useCallback((summary: string, detail: string) => {
     setCctvLogs((prev) =>
       [...prev, { id: createLogId(), timestamp: formatLogTimestamp(), summary, detail }].slice(-MAX_STREAM_LOGS)
@@ -545,6 +1095,73 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       [...prev, { id: createLogId(), timestamp: formatLogTimestamp(), summary, detail }].slice(-MAX_STREAM_LOGS)
     );
   }, []);
+
+  const appendEventFeedItem = useCallback((item: EventFeedItem) => {
+    setEventFeed((prev) => [item, ...prev].slice(0, MAX_EVENT_FEED_ITEMS));
+  }, []);
+
+  const flushLightControlQueue = useCallback(() => {
+    const socket = lightControlWsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    while (lightControlQueueRef.current.length > 0) {
+      const nextPayload = lightControlQueueRef.current.shift();
+      if (nextPayload) {
+        socket.send(nextPayload);
+      }
+    }
+  }, []);
+
+  const ensureLightControlSocket = useCallback(() => {
+    const existing = lightControlWsRef.current;
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+      return existing;
+    }
+
+    const socket = new WebSocket(getLightControlWsUrl(rtspControlApiBase));
+    socket.onopen = () => {
+      flushLightControlQueue();
+    };
+    socket.onclose = () => {
+      if (lightControlWsRef.current === socket) {
+        lightControlWsRef.current = null;
+      }
+    };
+    socket.onerror = () => {
+      appendSensorLog('경광등 제어 WebSocket 오류', '백엔드 경광등 제어 WebSocket 연결 중 오류가 발생했습니다.');
+    };
+    lightControlWsRef.current = socket;
+    return socket;
+  }, [appendSensorLog, flushLightControlQueue, rtspControlApiBase]);
+
+  const sendLightControlCommand = useCallback(
+    (command: LightControlCommand, reason: LightControlReason) => {
+      if (command === 'off' && lastLightCommandSentRef.current == null) {
+        return;
+      }
+
+      if (command === lastLightCommandSentRef.current) {
+        return;
+      }
+
+      lastLightCommandSentRef.current = command;
+      const payload = JSON.stringify({
+        type: 'light_control',
+        command,
+        timestamp: new Date().toISOString(),
+        reason,
+      });
+      const socket = ensureLightControlSocket();
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(payload);
+        return;
+      }
+      lightControlQueueRef.current.push(payload);
+    },
+    [ensureLightControlSocket]
+  );
 
   const saveLogsToServer = useCallback(
     async (type: LogStreamType) => {
@@ -568,6 +1185,186 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     [cctvLogs, sensorLogs]
   );
 
+  const persistTelegramSettings = useCallback(
+    (nextSettings: {
+      botToken: string;
+      chatIds: string[];
+      knownChats: TelegramKnownChat[];
+      autoSync: boolean;
+      sensorAlertCooldownMs: number;
+    }) => {
+      const nextChatIds = Array.from(new Set(nextSettings.chatIds.map(String).filter(Boolean)));
+      const nextKnownChats = nextSettings.knownChats.map((entry) => ({
+        ...entry,
+        selected: nextChatIds.includes(entry.id),
+      }));
+
+      setTelegramBotToken(nextSettings.botToken);
+      setTelegramBotTokenConfigured(Boolean(nextSettings.botToken));
+      setTelegramBotTokenMasked(maskTelegramBotToken(nextSettings.botToken));
+      setTelegramSelectedChatIds(nextChatIds);
+      setTelegramKnownChats(nextKnownChats);
+      setTelegramAutoSync(nextSettings.autoSync);
+      setTelegramSensorAlertCooldownMs(nextSettings.sensorAlertCooldownMs);
+      setTelegramSensorCooldownDraft(formatSecondsDraftFromMs(nextSettings.sensorAlertCooldownMs));
+      setTelegramBotTokenDraft('');
+
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(TELEGRAM_BOT_TOKEN_STORAGE_KEY, nextSettings.botToken);
+        window.localStorage.setItem(TELEGRAM_CHAT_IDS_STORAGE_KEY, JSON.stringify(nextChatIds));
+        window.localStorage.setItem(TELEGRAM_KNOWN_CHATS_STORAGE_KEY, JSON.stringify(nextKnownChats));
+        window.localStorage.setItem(TELEGRAM_AUTO_SYNC_STORAGE_KEY, String(nextSettings.autoSync));
+        window.localStorage.setItem(
+          TELEGRAM_SENSOR_COOLDOWN_STORAGE_KEY,
+          String(nextSettings.sensorAlertCooldownMs)
+        );
+      }
+    },
+    []
+  );
+
+  const refreshTelegramSettings = useCallback(async () => {
+    setTelegramBotTokenConfigured(Boolean(telegramBotToken));
+    setTelegramBotTokenMasked(maskTelegramBotToken(telegramBotToken));
+    setTelegramKnownChats((prev) =>
+      prev.map((entry) => ({
+        ...entry,
+        selected: telegramSelectedChatIds.includes(entry.id),
+      }))
+    );
+  }, [telegramBotToken, telegramSelectedChatIds]);
+
+  const relaySensorSnapshotToTelegram = useCallback(
+    async (snapshotPayload: Record<string, unknown>) => {
+      if (!telegramBotToken || telegramSelectedChatIds.length === 0) {
+        return;
+      }
+
+      const snapshot = parseFrontendStatePayload(snapshotPayload);
+      const caption = buildSensorTelegramCaption(snapshot);
+      if (!caption) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - telegramLastSensorAlertSentAtRef.current < telegramSensorAlertCooldownMs) {
+        return;
+      }
+
+      try {
+        for (const chatId of telegramSelectedChatIds) {
+          const response = await fetch(buildTelegramBotApiUrl(telegramBotToken, 'sendMessage'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+            },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: caption,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`telegram sendMessage failed with status ${response.status}`);
+          }
+        }
+        telegramLastSensorAlertSentAtRef.current = now;
+      } catch (error) {
+        appendSensorLog(
+          '텔레그램 센서 알림 전송 실패',
+          error instanceof Error ? error.message : '알 수 없는 오류'
+        );
+      }
+    },
+    [appendSensorLog, telegramBotToken, telegramSelectedChatIds, telegramSensorAlertCooldownMs]
+  );
+
+  const relayCctvRiskToTelegram = useCallback(
+    async (payload: Record<string, unknown>) => {
+      if (!telegramBotToken || telegramSelectedChatIds.length === 0) {
+        return;
+      }
+
+      const { frame, imageSrc: payloadImageSrc } = parseFramePayload(payload);
+      const caption = buildCctvTelegramCaption({
+        ...payload,
+        source_id: frame.sourceId,
+        zone_name: frame.zoneName ?? payload.zone_name,
+        top_event_ko: frame.topEventKo,
+        combined_ko: frame.combinedKo,
+      });
+      const sourceId = frame.sourceId;
+      const channelKey = parseCameraKey(sourceId);
+      const channel = channelKey ? channelByCameraKey[channelKey] : null;
+      const channelRuntime = channel ? runtimeMapRef.current[channel.id] : null;
+      const telegramRuntime: ChannelRuntimeState =
+        channelRuntime != null
+          ? {
+              ...channelRuntime,
+              visualFrame: frame,
+              latestFrame: frame,
+              alertTier: frame.alertTier,
+              currentImage: payloadImageSrc ?? channelRuntime.currentImage,
+              imageNaturalSize: channelRuntime.imageNaturalSize ?? frame.imageSize,
+            }
+          : {
+              ...EMPTY_INDUSTRIAL_MONITOR_RUNTIME,
+              latestFrame: frame,
+              visualFrame: frame,
+              alertTier: frame.alertTier,
+              currentImage: payloadImageSrc,
+              imageNaturalSize: frame.imageSize,
+            };
+      const imageSrc = telegramRuntime.currentImage ?? '';
+
+      try {
+        for (const chatId of telegramSelectedChatIds) {
+          if (imageSrc) {
+            const formData = new FormData();
+            formData.append('chat_id', chatId);
+            formData.append('caption', caption);
+            formData.append(
+              'photo',
+              await renderTelegramOverlayPhoto(imageSrc, telegramRuntime, bboxVisible, overlayDisplayMode),
+              'alert.jpg'
+            );
+
+            const response = await fetch(buildTelegramBotApiUrl(telegramBotToken, 'sendPhoto'), {
+              method: 'POST',
+              body: formData,
+            });
+
+            if (!response.ok) {
+              throw new Error(`telegram sendPhoto failed with status ${response.status}`);
+            }
+            continue;
+          }
+
+          const response = await fetch(buildTelegramBotApiUrl(telegramBotToken, 'sendMessage'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+            },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: caption,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`telegram sendMessage failed with status ${response.status}`);
+          }
+        }
+      } catch (error) {
+        appendCctvLog(
+          '텔레그램 CCTV 알림 전송 실패',
+          error instanceof Error ? error.message : '알 수 없는 오류'
+        );
+      }
+    },
+    [appendCctvLog, bboxVisible, channelByCameraKey, overlayDisplayMode, telegramBotToken, telegramSelectedChatIds]
+  );
+
   const updateRuntime = useCallback((channelId: number, updater: (prev: ChannelRuntimeState) => ChannelRuntimeState) => {
     setRuntimeMap((prev) => {
       const next = {
@@ -580,17 +1377,17 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   }, []);
 
   const buildPopupSnapshot = useCallback(
-    (channelId: number, runtime: ChannelRuntimeState): HazardPopupSnapshot => {
+    (channelId: number, runtime: ChannelRuntimeState, summaryOverride?: string): HazardPopupSnapshot => {
       const channel = channelById[channelId] ?? INDUSTRIAL_MONITOR_CHANNELS[0];
       return {
         channelId,
         channelLabel: channel.channel,
         channelTitle: channel.title,
-        summary: getFrameSummary(runtime.latestFrame),
+        summary: summaryOverride ?? getFrameSummary(runtime.latestFrame),
         runtime: {
           ...runtime,
           latestFrame: runtime.latestFrame,
-          visualFrame: runtime.latestFrame,
+          visualFrame: runtime.visualFrame,
         },
       };
     },
@@ -661,6 +1458,28 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     }, popupDurationMs);
   }, [clearPopupTimer, closePopupState, popupDurationMs]);
 
+  const openSensorEmergencyHazardPopup = useCallback(() => {
+    const selectedChannelId = selectHazardPopupChannelId(
+      latestRiskChannelIdRef.current,
+      latestFrameChannelIdRef.current
+    );
+    if (!selectedChannelId) return;
+
+    const selectedChannel = channelById[selectedChannelId];
+    const selectedRuntime = runtimeMapRef.current[selectedChannelId] ?? EMPTY_INDUSTRIAL_MONITOR_RUNTIME;
+    if (!selectedChannel || !selectedRuntime.currentImage || selectedRuntime.latestFrame.frameIndex == null) return;
+    const sensorRuntime = createSensorPopupRuntime(selectedRuntime);
+
+    clearPopupTimer();
+    setFocusedChannelId(selectedChannel.id);
+    popupChannelIdRef.current = selectedChannel.id;
+    setPopupChannelId(selectedChannel.id);
+    setPopupSnapshot(
+      buildPopupSnapshot(selectedChannel.id, sensorRuntime, '센서에서 위험이 감지되었습니다!')
+    );
+    refreshPopupTimer();
+  }, [buildPopupSnapshot, channelById, clearPopupTimer, refreshPopupTimer]);
+
   const disconnectSocket = useCallback(() => {
     clearReconnectTimer();
     clearPopupTimer();
@@ -675,6 +1494,8 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     const nextRuntimeMap = createRuntimeMap();
     runtimeMapRef.current = nextRuntimeMap;
     recentRiskSamplesRef.current = {};
+    latestRiskChannelIdRef.current = null;
+    latestFrameChannelIdRef.current = null;
     popupChannelIdRef.current = null;
     setPopupChannelId(null);
     setPopupSnapshot(null);
@@ -693,6 +1514,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       manualCloseSensorSocketsRef.current.add(ws);
       ws.close(1000, 'manual disconnect');
     }
+    setSensorSnapshot(null);
     appendSensorLog('센서 브리지 연결 해제', '사용자 요청으로 센서 브리지 WebSocket 연결을 종료했습니다.');
   }, [appendSensorLog, clearSensorPopupTimer, clearSensorReconnectTimer]);
 
@@ -756,6 +1578,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
               )
           );
           if (!channel) continue;
+          latestFrameChannelIdRef.current = channel.id;
 
           const nowMs = now.getTime();
           const previousRuntime = runtimeMapRef.current[channel.id] ?? { ...EMPTY_INDUSTRIAL_MONITOR_RUNTIME };
@@ -764,6 +1587,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
             nowMs,
           ];
           const alertEligible = isActionableAlert(frame);
+          const eventTimestamp = formatLogTimestamp(now);
 
           const nextRuntime: ChannelRuntimeState = {
             ...previousRuntime,
@@ -779,7 +1603,26 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
             errorMessage: null,
           };
 
+          runtimeMapRef.current = {
+            ...runtimeMapRef.current,
+            [channel.id]: nextRuntime,
+          };
           updateRuntime(channel.id, () => nextRuntime);
+
+          if (frame.alertTier !== 'normal' || frame.eventsKo.length > 0) {
+            appendEventFeedItem({
+              id: createLogId(),
+              channelId: channel.id,
+              channelLabel: channel.channel,
+              channelTitle: channel.title,
+              alertTier: frame.alertTier === 'risk' ? 'risk' : 'caution',
+              summary: getFrameSummary(frame),
+              frameIndex: frame.frameIndex,
+              objectCount: frame.objects.length,
+              sourceId: frame.sourceId,
+              timestamp: eventTimestamp,
+            });
+          }
 
           const nextSamples = [
             ...(recentRiskSamplesRef.current[channel.id] ?? []).filter(
@@ -797,13 +1640,28 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
             frame.alertTier === 'risk' &&
             (isImmediateSevereFrame(frame) ||
               evaluateHazardQualification(nextSamples, hazardPopupDebounceMode, HAZARD_QUALIFICATION_WINDOW_MS));
+          if (qualifiesForPopup) {
+            latestRiskChannelIdRef.current = channel.id;
+          }
+
+          const currentSensorGateState = getSensorGateState(sensorSnapshot).sensorGateState;
+          const shouldBlockPopup = currentSensorGateState === 'approved_nearest';
+          const shouldRelayCctvRisk =
+            qualifiesForPopup &&
+            !shouldBlockPopup &&
+            popupChannelIdRef.current == null;
 
           if (
             qualifiesForPopup &&
+            !shouldBlockPopup &&
             (popupChannelIdRef.current == null || popupChannelIdRef.current === channel.id)
           ) {
             if (popupChannelIdRef.current == null) {
               setFocusedChannelId(channel.id);
+            }
+
+            if (shouldRelayCctvRisk) {
+              void relayCctvRiskToTelegram(payload);
             }
 
             popupChannelIdRef.current = channel.id;
@@ -873,11 +1731,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     },
     [
       appendCctvLog,
+      appendEventFeedItem,
       buildPopupSnapshot,
       channelByCameraKey,
       clearReconnectTimer,
       hazardPopupDebounceMode,
+      relayCctvRiskToTelegram,
       refreshPopupTimer,
+      sensorSnapshot,
       updateRuntime,
     ]
   );
@@ -907,6 +1768,12 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         const payloads = extractJsonPayloadsFromText(event.data);
         for (const payload of payloads) {
           const nextSnapshot = parseFrontendStatePayload(payload);
+          const nextHazardState = deriveHazardControlState({
+            sensorSnapshot: nextSnapshot,
+            aiHazardDetected: popupSnapshot?.runtime.alertTier === 'risk',
+            latestRiskChannelId: latestRiskChannelIdRef.current,
+            latestFrameChannelId: latestFrameChannelIdRef.current,
+          });
           appendSensorLog(
             '현장 상태 스냅샷 수신',
             sanitizePayloadDetail(payload) ||
@@ -921,6 +1788,28 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
           );
           setSensorSnapshot(nextSnapshot);
           setFieldStateMessage(null);
+
+          if (
+            nextSnapshot.workers.some(
+              (worker) =>
+                worker.approved === false &&
+                (worker.isWarning || worker.isEmergency || worker.zoneStatus === 'danger')
+            )
+          ) {
+            void relaySensorSnapshotToTelegram(payload);
+          }
+
+          if (nextHazardState.sensorGateState === 'approved_nearest') {
+            clearPopupTimer();
+            closePopupState();
+            clearSensorPopupTimer();
+            setSensorPopupOpen(false);
+            continue;
+          }
+
+          if (nextHazardState.sensorGateState === 'unapproved_nearest') {
+            openSensorEmergencyHazardPopup();
+          }
         }
       };
 
@@ -957,7 +1846,16 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         }, RECONNECT_DELAYS_MS[nextAttempt - 1] ?? RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1]);
       };
     },
-    [appendSensorLog, clearSensorReconnectTimer]
+    [
+      appendSensorLog,
+      clearPopupTimer,
+      clearSensorPopupTimer,
+      clearSensorReconnectTimer,
+      closePopupState,
+      openSensorEmergencyHazardPopup,
+      popupSnapshot,
+      relaySensorSnapshotToTelegram,
+    ]
   );
 
   useEffect(() => {
@@ -977,8 +1875,35 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       ) {
         sensorWsRef.current.close(1000, 'component unmount');
       }
+      if (
+        lightControlWsRef.current &&
+        (lightControlWsRef.current.readyState === WebSocket.OPEN ||
+          lightControlWsRef.current.readyState === WebSocket.CONNECTING)
+      ) {
+        lightControlWsRef.current.close(1000, 'component unmount');
+      }
     };
   }, [clearPopupTimer, clearReconnectTimer, clearSensorPopupTimer, clearSensorReconnectTimer]);
+
+  useEffect(() => {
+    if (hazardControlState.sensorGateState === 'approved_nearest' && popupSnapshot) {
+      clearPopupTimer();
+      closePopupState();
+      clearSensorPopupTimer();
+      setSensorPopupOpen(false);
+    }
+
+    sendLightControlCommand(hazardControlState.lightCommand, hazardControlState.popupReason);
+  }, [
+    clearPopupTimer,
+    clearSensorPopupTimer,
+    closePopupState,
+    hazardControlState.lightCommand,
+    hazardControlState.popupReason,
+    hazardControlState.sensorGateState,
+    popupSnapshot,
+    sendLightControlCommand,
+  ]);
 
   const updateWsDraft = useCallback((value: string) => {
     setWsDraft(value);
@@ -998,6 +1923,31 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const updateRtspUrlDraft = useCallback((value: string) => {
     setRtspUrlDraft(value);
     setRtspStreamMessage(null);
+  }, []);
+
+  const updateTelegramBotTokenDraft = useCallback((value: string) => {
+    setTelegramBotTokenDraft(value);
+    setTelegramSettingsMessage(null);
+  }, []);
+
+  const updateTelegramChatSelection = useCallback((chatId: string, selected: boolean) => {
+    setTelegramSelectedChatIds((prev) =>
+      selected ? Array.from(new Set([...prev, chatId])) : prev.filter((entry) => entry !== chatId)
+    );
+    setTelegramKnownChats((prev) =>
+      prev.map((entry) => (entry.id === chatId ? { ...entry, selected } : entry))
+    );
+    setTelegramSettingsMessage(null);
+  }, []);
+
+  const updateTelegramAutoSync = useCallback((value: boolean) => {
+    setTelegramAutoSync(value);
+    setTelegramSettingsMessage(null);
+  }, []);
+
+  const updateTelegramSensorCooldownDraft = useCallback((value: string) => {
+    setTelegramSensorCooldownDraft(value);
+    setTelegramSettingsMessage(null);
   }, []);
 
   const updateOverlayDisplayMode = useCallback((value: OverlayDisplayMode) => {
@@ -1090,6 +2040,80 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setRtspControlDraft(nextUrl);
     setRtspStreamMessage(nextUrl ? 'RTSP 제어 주소를 저장했습니다.' : 'RTSP 제어 주소를 비웠습니다.');
   }, [rtspControlDraft]);
+
+  const syncTelegramChats = useCallback(async () => {
+    setTelegramSyncingChats(true);
+    setTelegramSettingsMessage(null);
+
+    try {
+      const nextBotToken = telegramBotTokenDraft.trim() || telegramBotToken.trim();
+      if (!nextBotToken) {
+        throw new Error('Telegram Bot Token을 먼저 입력해주세요.');
+      }
+
+      const response = await fetch(buildTelegramBotApiUrl(nextBotToken, 'getUpdates'), {
+        method: 'GET',
+      });
+      const payload = await response.json();
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(
+          typeof payload?.description === 'string' ? payload.description : '채팅방 찾기에 실패했습니다.'
+        );
+      }
+
+      const selectedSet = new Set(telegramSelectedChatIds);
+      const knownChatsMap = new Map(telegramKnownChats.map((entry) => [entry.id, entry]));
+      const updates = Array.isArray(payload?.result) ? payload.result : [];
+
+      for (const update of updates) {
+        const chat = extractTelegramChat(update as Record<string, unknown>);
+        if (!chat) continue;
+        knownChatsMap.set(chat.id, {
+          ...chat,
+          selected: selectedSet.has(chat.id),
+        });
+      }
+
+      const nextKnownChats = Array.from(knownChatsMap.values());
+      setTelegramKnownChats(nextKnownChats);
+      setTelegramSettingsMessage('텔레그램 채팅방 목록을 찾았습니다.');
+    } catch (error) {
+      setTelegramSettingsMessage(error instanceof Error ? error.message : '채팅방 찾기에 실패했습니다.');
+    } finally {
+      setTelegramSyncingChats(false);
+    }
+  }, [telegramBotToken, telegramBotTokenDraft, telegramKnownChats, telegramSelectedChatIds]);
+
+  const applyTelegramSettings = useCallback(async () => {
+    setTelegramSavingSettings(true);
+    setTelegramSettingsMessage(null);
+
+    try {
+      const nextBotToken = telegramBotTokenDraft.trim() || telegramBotToken.trim();
+      const nextCooldownMs = parseSecondsDraftToMs(telegramSensorCooldownDraft, telegramSensorAlertCooldownMs);
+      persistTelegramSettings({
+        botToken: nextBotToken,
+        chatIds: telegramSelectedChatIds,
+        knownChats: telegramKnownChats,
+        autoSync: telegramAutoSync,
+        sensorAlertCooldownMs: nextCooldownMs,
+      });
+      setTelegramSettingsMessage('텔레그램 설정을 저장했습니다.');
+    } catch (error) {
+      setTelegramSettingsMessage(error instanceof Error ? error.message : '텔레그램 설정 저장에 실패했습니다.');
+    } finally {
+      setTelegramSavingSettings(false);
+    }
+  }, [
+    persistTelegramSettings,
+    telegramBotToken,
+    telegramAutoSync,
+    telegramBotTokenDraft,
+    telegramKnownChats,
+    telegramSelectedChatIds,
+    telegramSensorAlertCooldownMs,
+    telegramSensorCooldownDraft,
+  ]);
 
   const startRtspStream = useCallback(async () => {
     const nextUrl = rtspUrlDraft.trim();
@@ -1210,20 +2234,41 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     focusedChannelId,
     popupChannelId,
     popupSnapshot,
+    nearestSensorWorker: hazardControlState.nearestSensorWorker,
+    sensorGateState: hazardControlState.sensorGateState,
+    effectiveHazardState: hazardControlState.effectiveHazardState,
+    latestRiskChannelId: latestRiskChannelIdRef.current,
+    latestFrameChannelId: latestFrameChannelIdRef.current,
     sensorConnectionStatus,
     sensorReconnectAttempt,
     sensorSettingsMessage,
     fieldStateMessage,
     sensorSnapshot,
     sensorPopupOpen,
+    telegramSettingsMessage,
+    telegramBotTokenConfigured,
+    telegramBotTokenMasked,
+    telegramBotTokenDraft,
+    telegramKnownChats,
+    telegramSelectedChatIds,
+    telegramAutoSync,
+    telegramSensorAlertCooldownMs,
+    telegramSensorCooldownDraft,
+    telegramSyncingChats,
+    telegramSavingSettings,
     sensorLogs,
     cctvLogs,
+    eventFeed,
     logActionMessage,
     savingLogType,
     updateWsDraft,
     updateSensorBridgeDraft,
     updateRtspControlDraft,
     updateRtspUrlDraft,
+    updateTelegramBotTokenDraft,
+    updateTelegramChatSelection,
+    updateTelegramAutoSync,
+    updateTelegramSensorCooldownDraft,
     updateBboxVisible,
     updateOverlayDisplayMode,
     updateHazardPopupDebounceMode,
@@ -1240,6 +2285,9 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     applyRtspUrl,
     startRtspStream,
     stopRtspStream,
+    refreshTelegramSettings,
+    syncTelegramChats,
+    applyTelegramSettings,
     openChannelPopup,
     closeChannelPopup,
     openSensorSnapshotPreview,

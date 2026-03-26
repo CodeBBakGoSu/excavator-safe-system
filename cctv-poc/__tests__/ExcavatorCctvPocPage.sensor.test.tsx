@@ -17,6 +17,7 @@ class MockWebSocket {
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   deferCloseNotification = false;
+  sent: string[] = [];
 
   constructor(url: string) {
     this.url = url;
@@ -38,6 +39,10 @@ class MockWebSocket {
 
   emitMessage(data: string) {
     this.onmessage?.({ data } as MessageEvent<string>);
+  }
+
+  send(data: string) {
+    this.sent.push(data);
   }
 
   emitClose() {
@@ -333,7 +338,7 @@ describe('IndustrialCommandApp sensor flow', () => {
     fireEvent.change(screen.getByPlaceholderText('ws://localhost:8787'), {
       target: { value: 'ws://localhost:8787' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '기본 연결 적용' }));
     fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
 
     act(() => {
@@ -381,7 +386,7 @@ describe('IndustrialCommandApp sensor flow', () => {
     fireEvent.change(screen.getByPlaceholderText('ws://host:port/path'), {
       target: { value: 'ws://localhost:9999/frames' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '기본 연결 적용' }));
     fireEvent.click(screen.getByRole('button', { name: '카메라 연결' }));
 
     act(() => {
@@ -411,7 +416,7 @@ describe('IndustrialCommandApp sensor flow', () => {
     fireEvent.change(screen.getByPlaceholderText('ws://localhost:8787'), {
       target: { value: 'ws://localhost:8787' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '기본 연결 적용' }));
     fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
     act(() => {
       vi.runOnlyPendingTimers();
@@ -468,7 +473,7 @@ describe('IndustrialCommandApp sensor flow', () => {
     fireEvent.change(screen.getByPlaceholderText('ws://localhost:8787'), {
       target: { value: 'ws://localhost:8787' },
     });
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '기본 연결 적용' }));
     fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
 
     act(() => {
