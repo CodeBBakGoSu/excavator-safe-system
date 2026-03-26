@@ -26,6 +26,8 @@ const BBOX_VISIBLE_STORAGE_KEY = 'excavator-safe-system:bbox-visible';
 const OVERLAY_DISPLAY_MODE_STORAGE_KEY = 'excavator-safe-system:overlay-display-mode';
 const HAZARD_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:hazard-popup-duration-ms';
 const FIELD_STATE_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:field-state-popup-duration-ms';
+const HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY = 'excavator-safe-system:hazard-popup-debounce-mode';
+const HAZARD_QUALIFICATION_WINDOW_MS = 1500;
 
 export const INDUSTRIAL_MONITOR_CHANNELS: ChannelConfig[] = [
   { id: 1, cameraKey: 'cam1', channel: 'CH-01', title: '굴착기 구역 A', sourceType: 'cctv' },
@@ -77,6 +79,21 @@ export type StreamLogEntry = {
 export type LogStreamType = 'cctv' | 'sensor';
 export type RtspStreamStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'failed';
 export type OverlayDisplayMode = 'always' | 'alert' | 'risk';
+export type HazardPopupDebounceMode = 'recent_three_frames_two_risks' | 'consecutive_two_risks';
+
+export type HazardRiskSample = {
+  atMs: number;
+  isRisk: boolean;
+  severity: 'normal' | 'risk';
+};
+
+export type HazardPopupSnapshot = {
+  channelId: number;
+  channelLabel: string;
+  channelTitle: string;
+  summary: string;
+  runtime: ChannelRuntimeState;
+};
 
 type SocketConnectMode = 'manual' | 'retry';
 
@@ -313,6 +330,15 @@ function loadStoredOverlayDisplayMode(defaultValue: OverlayDisplayMode = 'always
   return defaultValue;
 }
 
+function loadStoredHazardPopupDebounceMode(
+  defaultValue: HazardPopupDebounceMode = 'recent_three_frames_two_risks'
+) {
+  if (typeof window === 'undefined') return defaultValue;
+  const stored = window.localStorage.getItem(HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY);
+  if (stored === 'recent_three_frames_two_risks' || stored === 'consecutive_two_risks') return stored;
+  return defaultValue;
+}
+
 export function getRtspApiBase(
   rtspControlUrl: string,
   rtspControlDraft: string,
@@ -344,6 +370,34 @@ function isActionableAlert(frame: FrameSnapshot) {
   return frame.alertTier !== 'normal' || frame.eventsKo.length > 0 || Boolean(frame.topEventKo);
 }
 
+function getFrameSummary(frame: FrameSnapshot) {
+  return frame.topEventKo || frame.combinedKo || frame.eventsKo[0] || '실시간 위험 이벤트 대기';
+}
+
+function isImmediateSevereFrame(frame: FrameSnapshot) {
+  return frame.highlight?.tone === 'red' || /매우높음|초근접/.test(frame.topEventKo);
+}
+
+export function evaluateHazardQualification(
+  samples: HazardRiskSample[],
+  mode: HazardPopupDebounceMode,
+  qualificationWindowMs = HAZARD_QUALIFICATION_WINDOW_MS
+) {
+  if (samples.length === 0) return false;
+
+  const latestAtMs = samples[samples.length - 1]?.atMs ?? 0;
+  const recentSamples = samples
+    .filter((sample) => latestAtMs - sample.atMs <= qualificationWindowMs)
+    .slice(-3);
+
+  if (mode === 'consecutive_two_risks') {
+    const lastTwo = recentSamples.slice(-2);
+    return lastTwo.length === 2 && lastTwo.every((sample) => sample.isRisk);
+  }
+
+  return recentSamples.filter((sample) => sample.isRisk).length >= 2;
+}
+
 export interface IndustrialMonitorRuntime {
   wsUrl: string;
   wsDraft: string;
@@ -358,12 +412,14 @@ export interface IndustrialMonitorRuntime {
   rtspStreamMessage: string | null;
   bboxVisible: boolean;
   overlayDisplayMode: OverlayDisplayMode;
+  hazardPopupDebounceMode: HazardPopupDebounceMode;
   popupDurationMs: number;
   sensorPopupDurationMs: number;
   runtimeMap: Record<number, ChannelRuntimeState>;
   configMessage: string | null;
   focusedChannelId: number;
   popupChannelId: number | null;
+  popupSnapshot: HazardPopupSnapshot | null;
   sensorConnectionStatus: FrontendStateConnectionStatus;
   sensorReconnectAttempt: number;
   sensorSettingsMessage: string | null;
@@ -380,6 +436,7 @@ export interface IndustrialMonitorRuntime {
   updateRtspUrlDraft: (value: string) => void;
   updateBboxVisible: (value: boolean) => void;
   updateOverlayDisplayMode: (value: OverlayDisplayMode) => void;
+  updateHazardPopupDebounceMode: (value: HazardPopupDebounceMode) => void;
   setPopupDurationMs: (value: number) => void;
   setSensorPopupDurationMs: (value: number) => void;
   focusChannel: (channelId: number) => void;
@@ -417,6 +474,9 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [overlayDisplayMode, setOverlayDisplayMode] = useState<OverlayDisplayMode>(() =>
     loadStoredOverlayDisplayMode('always')
   );
+  const [hazardPopupDebounceMode, setHazardPopupDebounceMode] = useState<HazardPopupDebounceMode>(() =>
+    loadStoredHazardPopupDebounceMode('recent_three_frames_two_risks')
+  );
   const [popupDurationMs, setPopupDurationMsState] = useState(() =>
     loadStoredDuration(HAZARD_POPUP_DURATION_STORAGE_KEY, AUTO_POPUP_MS)
   );
@@ -427,6 +487,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [configMessage, setConfigMessage] = useState<string | null>(null);
   const [focusedChannelId, setFocusedChannelId] = useState<number>(1);
   const [popupChannelId, setPopupChannelId] = useState<number | null>(null);
+  const [popupSnapshot, setPopupSnapshot] = useState<HazardPopupSnapshot | null>(null);
   const [sensorConnectionStatus, setSensorConnectionStatus] = useState<FrontendStateConnectionStatus>('idle');
   const [sensorReconnectAttempt, setSensorReconnectAttempt] = useState(0);
   const [sensorSettingsMessage, setSensorSettingsMessage] = useState<string | null>(null);
@@ -453,6 +514,8 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const sensorPopupTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const frameTimesRef = useRef<Record<number, number[]>>({});
+  const recentRiskSamplesRef = useRef<Record<number, HazardRiskSample[]>>({});
+  const runtimeMapRef = useRef<Record<number, ChannelRuntimeState>>(createRuntimeMap());
   const manualCloseSocketsRef = useRef(new WeakSet<WebSocket>());
   const manualCloseSensorSocketsRef = useRef(new WeakSet<WebSocket>());
 
@@ -462,6 +525,12 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         string,
         ChannelConfig
       >,
+    []
+  );
+
+  const channelById = useMemo(
+    () =>
+      Object.fromEntries(INDUSTRIAL_MONITOR_CHANNELS.map((channel) => [channel.id, channel])) as Record<number, ChannelConfig>,
     []
   );
 
@@ -500,11 +569,33 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   );
 
   const updateRuntime = useCallback((channelId: number, updater: (prev: ChannelRuntimeState) => ChannelRuntimeState) => {
-    setRuntimeMap((prev) => ({
-      ...prev,
-      [channelId]: updater(prev[channelId] ?? { ...EMPTY_INDUSTRIAL_MONITOR_RUNTIME }),
-    }));
+    setRuntimeMap((prev) => {
+      const next = {
+        ...prev,
+        [channelId]: updater(prev[channelId] ?? { ...EMPTY_INDUSTRIAL_MONITOR_RUNTIME }),
+      };
+      runtimeMapRef.current = next;
+      return next;
+    });
   }, []);
+
+  const buildPopupSnapshot = useCallback(
+    (channelId: number, runtime: ChannelRuntimeState): HazardPopupSnapshot => {
+      const channel = channelById[channelId] ?? INDUSTRIAL_MONITOR_CHANNELS[0];
+      return {
+        channelId,
+        channelLabel: channel.channel,
+        channelTitle: channel.title,
+        summary: getFrameSummary(runtime.latestFrame),
+        runtime: {
+          ...runtime,
+          latestFrame: runtime.latestFrame,
+          visualFrame: runtime.latestFrame,
+        },
+      };
+    },
+    [channelById]
+  );
 
   const updateChannelImageNaturalSize = useCallback(
     (channelId: number, width: number, height: number) => {
@@ -556,8 +647,23 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     }));
   }, [rtspStreamMessage, updateRuntime]);
 
+  const closePopupState = useCallback(() => {
+    popupChannelIdRef.current = null;
+    setPopupChannelId(null);
+    setPopupSnapshot(null);
+  }, []);
+
+  const refreshPopupTimer = useCallback(() => {
+    clearPopupTimer();
+    popupTimerRef.current = window.setTimeout(() => {
+      if (!mountedRef.current) return;
+      closePopupState();
+    }, popupDurationMs);
+  }, [clearPopupTimer, closePopupState, popupDurationMs]);
+
   const disconnectSocket = useCallback(() => {
     clearReconnectTimer();
+    clearPopupTimer();
     reconnectAttemptRef.current = 0;
     const ws = wsRef.current;
     wsRef.current = null;
@@ -566,8 +672,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       ws.close(1000, 'manual disconnect');
     }
     appendCctvLog('CCTV WebSocket 연결 해제', '사용자 요청으로 영상 WebSocket 연결을 종료했습니다.');
-    setRuntimeMap(createRuntimeMap());
-  }, [appendCctvLog, clearReconnectTimer]);
+    const nextRuntimeMap = createRuntimeMap();
+    runtimeMapRef.current = nextRuntimeMap;
+    recentRiskSamplesRef.current = {};
+    popupChannelIdRef.current = null;
+    setPopupChannelId(null);
+    setPopupSnapshot(null);
+    setRuntimeMap(nextRuntimeMap);
+  }, [appendCctvLog, clearPopupTimer, clearReconnectTimer]);
 
   const disconnectSensorSocket = useCallback(() => {
     clearSensorReconnectTimer();
@@ -646,16 +758,17 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
           if (!channel) continue;
 
           const nowMs = now.getTime();
+          const previousRuntime = runtimeMapRef.current[channel.id] ?? { ...EMPTY_INDUSTRIAL_MONITOR_RUNTIME };
           frameTimesRef.current[channel.id] = [
             ...(frameTimesRef.current[channel.id] ?? []).filter((item) => nowMs - item < 1000),
             nowMs,
           ];
           const alertEligible = isActionableAlert(frame);
 
-          updateRuntime(channel.id, (prev) => ({
-            ...prev,
+          const nextRuntime: ChannelRuntimeState = {
+            ...previousRuntime,
             connectionStatus: 'connected',
-            currentImage: imageSrc ?? prev.currentImage,
+            currentImage: imageSrc ?? previousRuntime.currentImage,
             latestFrame: frame,
             visualFrame: frame,
             alertTier: frame.alertTier,
@@ -664,20 +777,39 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
             lastMessageAt: now,
             topEventFlash: alertEligible,
             errorMessage: null,
-          }));
+          };
 
-          if (frame.alertTier === 'risk') {
+          updateRuntime(channel.id, () => nextRuntime);
+
+          const nextSamples = [
+            ...(recentRiskSamplesRef.current[channel.id] ?? []).filter(
+              (sample) => nowMs - sample.atMs <= HAZARD_QUALIFICATION_WINDOW_MS
+            ),
+            {
+              atMs: nowMs,
+              isRisk: frame.alertTier === 'risk',
+              severity: frame.alertTier === 'risk' ? 'risk' : 'normal',
+            } satisfies HazardRiskSample,
+          ].slice(-3);
+          recentRiskSamplesRef.current[channel.id] = nextSamples;
+
+          const qualifiesForPopup =
+            frame.alertTier === 'risk' &&
+            (isImmediateSevereFrame(frame) ||
+              evaluateHazardQualification(nextSamples, hazardPopupDebounceMode, HAZARD_QUALIFICATION_WINDOW_MS));
+
+          if (
+            qualifiesForPopup &&
+            (popupChannelIdRef.current == null || popupChannelIdRef.current === channel.id)
+          ) {
             if (popupChannelIdRef.current == null) {
               setFocusedChannelId(channel.id);
-              popupChannelIdRef.current = channel.id;
-              setPopupChannelId(channel.id);
-              clearPopupTimer();
-              popupTimerRef.current = window.setTimeout(() => {
-                if (!mountedRef.current) return;
-                popupChannelIdRef.current = null;
-                setPopupChannelId(null);
-              }, popupDurationMs);
             }
+
+            popupChannelIdRef.current = channel.id;
+            setPopupChannelId(channel.id);
+            setPopupSnapshot(buildPopupSnapshot(channel.id, nextRuntime));
+            refreshPopupTimer();
           }
         }
       };
@@ -739,7 +871,15 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         }, RECONNECT_DELAYS_MS[nextAttempt - 1] ?? RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1]);
       };
     },
-    [appendCctvLog, channelByCameraKey, clearPopupTimer, clearReconnectTimer, popupDurationMs, updateRuntime]
+    [
+      appendCctvLog,
+      buildPopupSnapshot,
+      channelByCameraKey,
+      clearReconnectTimer,
+      hazardPopupDebounceMode,
+      refreshPopupTimer,
+      updateRuntime,
+    ]
   );
 
   const connectSensorSocket = useCallback(
@@ -864,6 +1004,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setOverlayDisplayMode(value);
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(OVERLAY_DISPLAY_MODE_STORAGE_KEY, value);
+    }
+  }, []);
+
+  const updateHazardPopupDebounceMode = useCallback((value: HazardPopupDebounceMode) => {
+    setHazardPopupDebounceMode(value);
+    recentRiskSamplesRef.current = {};
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY, value);
     }
   }, []);
 
@@ -1012,7 +1160,9 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setFocusedChannelId(channelId);
     popupChannelIdRef.current = channelId;
     setPopupChannelId(channelId);
-  }, [clearPopupTimer]);
+    const runtime = runtimeMapRef.current[channelId] ?? { ...EMPTY_INDUSTRIAL_MONITOR_RUNTIME };
+    setPopupSnapshot(buildPopupSnapshot(channelId, runtime));
+  }, [buildPopupSnapshot, clearPopupTimer]);
 
   const focusChannel = useCallback((channelId: number) => {
     setFocusedChannelId(channelId);
@@ -1020,9 +1170,8 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
 
   const closeChannelPopup = useCallback(() => {
     clearPopupTimer();
-    popupChannelIdRef.current = null;
-    setPopupChannelId(null);
-  }, [clearPopupTimer]);
+    closePopupState();
+  }, [clearPopupTimer, closePopupState]);
 
   const openSensorSnapshotPreview = useCallback(() => {
     clearSensorPopupTimer();
@@ -1053,12 +1202,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     rtspStreamMessage,
     bboxVisible,
     overlayDisplayMode,
+    hazardPopupDebounceMode,
     popupDurationMs,
     sensorPopupDurationMs,
     runtimeMap,
     configMessage,
     focusedChannelId,
     popupChannelId,
+    popupSnapshot,
     sensorConnectionStatus,
     sensorReconnectAttempt,
     sensorSettingsMessage,
@@ -1075,6 +1226,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     updateRtspUrlDraft,
     updateBboxVisible,
     updateOverlayDisplayMode,
+    updateHazardPopupDebounceMode,
     setPopupDurationMs,
     setSensorPopupDurationMs,
     focusChannel,

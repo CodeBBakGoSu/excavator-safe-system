@@ -39,6 +39,41 @@ class MockWebSocket {
   }
 }
 
+function emitCctvFrame(
+  payload: Partial<{
+    source_id: string;
+    frame_index: number;
+    combined_ko: string;
+    top_event_ko: string;
+    events_ko: string[];
+    zone_name: string;
+    distance_text: string;
+    target_label: string;
+    image_size: [number, number];
+    objects: Array<{ track_id: number; label: string; bbox_xyxy: [number, number, number, number] }>;
+    event_object_groups: Array<{ event: { level: string; message_ko: string }; track_ids: number[] }>;
+    image_jpeg_base64: string;
+  }>
+) {
+  MockWebSocket.instances[0].emitMessage(
+    JSON.stringify({
+      source_id: 'cam1',
+      frame_index: 1,
+      combined_ko: '현장 상황: 현재 위험 이벤트 없음.',
+      top_event_ko: '정상(이벤트 없음)',
+      events_ko: [],
+      zone_name: '굴착기 구역 A',
+      distance_text: '약 1.8m',
+      target_label: 'person',
+      image_size: [1920, 1080],
+      objects: [{ track_id: 7, label: 'person', bbox_xyxy: [240, 120, 560, 920] }],
+      event_object_groups: [],
+      image_jpeg_base64: FRAME_IMAGE,
+      ...payload,
+    })
+  );
+}
+
 function emitLiveData({
   cctvUrl = 'ws://localhost:9999/frames',
   sensorUrl = 'ws://localhost:8787',
@@ -243,36 +278,42 @@ describe('IndustrialCommandApp', () => {
     act(() => {
       MockWebSocket.instances[0].emitOpen();
       MockWebSocket.instances[1].emitOpen();
-      MockWebSocket.instances[0].emitMessage(
-        JSON.stringify({
-          source_id: 'cam1',
-          frame_index: 12,
-          combined_ko: '작업자 위험 접근',
-          top_event_ko: '경고: 작업자 접근',
-          events_ko: ['작업자 접근'],
-          zone_name: '굴착기 구역 A',
-          distance_text: '약 1.8m',
-          target_label: 'person',
-          image_size: [1920, 1080],
-          objects: [
-            {
-              track_id: 7,
-              label: 'person',
-              bbox_xyxy: [240, 120, 560, 920],
+      emitCctvFrame({
+        frame_index: 11,
+        combined_ko: '작업자 위험 접근',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        zone_name: '굴착기 구역 A',
+        distance_text: '약 1.8m',
+        target_label: 'person',
+        event_object_groups: [
+          {
+            event: {
+              level: 'RISK',
+              message_ko: '경고: 작업자 접근',
             },
-          ],
-          event_object_groups: [
-            {
-              event: {
-                level: 'RISK',
-                message_ko: '경고: 작업자 접근',
-              },
-              track_ids: [7],
+            track_ids: [7],
+          },
+        ],
+      });
+      emitCctvFrame({
+        frame_index: 12,
+        combined_ko: '작업자 위험 접근 지속',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        zone_name: '굴착기 구역 A',
+        distance_text: '약 1.8m',
+        target_label: 'person',
+        event_object_groups: [
+          {
+            event: {
+              level: 'RISK',
+              message_ko: '경고: 작업자 접근',
             },
-          ],
-          image_jpeg_base64: FRAME_IMAGE,
-        })
-      );
+            track_ids: [7],
+          },
+        ],
+      });
       MockWebSocket.instances[1].emitMessage(
         JSON.stringify({
           type: 'frontend_state',
@@ -300,7 +341,7 @@ describe('IndustrialCommandApp', () => {
     expect(screen.queryByRole('dialog', { name: '현장 상태 스냅샷' })).not.toBeInTheDocument();
   });
 
-  it('does not extend the current risk popup timer when more risk frames arrive during the popup window', () => {
+  it('opens on 2 of the last 3 risk frames by default and extends the current risk popup timer when more qualifying frames arrive', () => {
     window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');
     window.localStorage.setItem('excavator-safe-system:hazard-popup-duration-ms', '120');
 
@@ -310,45 +351,97 @@ describe('IndustrialCommandApp', () => {
 
     act(() => {
       MockWebSocket.instances[0].emitOpen();
-      MockWebSocket.instances[0].emitMessage(
-        JSON.stringify({
-          source_id: 'cam1',
-          frame_index: 12,
-          combined_ko: '작업자 위험 접근',
-          top_event_ko: '경고: 작업자 접근',
-          events_ko: ['작업자 접근'],
-          image_size: [1920, 1080],
-          objects: [{ track_id: 7, label: 'person', bbox_xyxy: [240, 120, 560, 920] }],
-          event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
-          image_jpeg_base64: FRAME_IMAGE,
-        })
-      );
+      emitCctvFrame({ frame_index: 11 });
+      emitCctvFrame({
+        frame_index: 12,
+        combined_ko: '작업자 위험 접근',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
+    });
+
+    expect(screen.queryByRole('dialog', { name: '위험 이벤트 상세' })).not.toBeInTheDocument();
+
+    act(() => {
+      emitCctvFrame({
+        frame_index: 13,
+        combined_ko: '작업자 위험 접근 지속',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
     });
 
     expect(screen.getByRole('dialog', { name: '위험 이벤트 상세' })).toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(60);
-      MockWebSocket.instances[0].emitMessage(
-        JSON.stringify({
-          source_id: 'cam1',
-          frame_index: 13,
-          combined_ko: '작업자 위험 접근 지속',
-          top_event_ko: '경고: 작업자 접근',
-          events_ko: ['작업자 접근'],
-          image_size: [1920, 1080],
-          objects: [{ track_id: 7, label: 'person', bbox_xyxy: [240, 120, 560, 920] }],
-          event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
-          image_jpeg_base64: FRAME_IMAGE,
-        })
-      );
+      emitCctvFrame({
+        frame_index: 14,
+        combined_ko: '작업자 위험 접근 지속',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
     });
 
     act(() => {
-      vi.advanceTimersByTime(60);
+      vi.advanceTimersByTime(59);
+    });
+
+    expect(screen.getByRole('dialog', { name: '위험 이벤트 상세' })).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(61);
     });
 
     expect(screen.queryByRole('dialog', { name: '위험 이벤트 상세' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the popup content pinned to the last qualified risk snapshot even if a later normal frame lacks image data', () => {
+    window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: '카메라 연결' }));
+
+    act(() => {
+      MockWebSocket.instances[0].emitOpen();
+      emitCctvFrame({
+        frame_index: 20,
+        combined_ko: '작업자 위험 접근',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
+      emitCctvFrame({
+        frame_index: 21,
+        combined_ko: '작업자 위험 접근 지속',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
+    });
+
+    const dialog = screen.getByRole('dialog', { name: '위험 이벤트 상세' });
+    expect(within(dialog).getByText('작업자 위험 접근 지속')).toBeInTheDocument();
+
+    act(() => {
+      emitCctvFrame({
+        frame_index: 22,
+        combined_ko: '현장 상황: 현재 위험 이벤트 없음.',
+        top_event_ko: '정상(이벤트 없음)',
+        events_ko: [],
+        event_object_groups: [],
+        image_jpeg_base64: '',
+      });
+    });
+
+    const stickyDialog = screen.getByRole('dialog', { name: '위험 이벤트 상세' });
+    expect(within(stickyDialog).getByText('작업자 위험 접근 지속')).toBeInTheDocument();
+    expect(within(stickyDialog).queryByText('프레임 세부 요약이 수신되면 여기에 표시됩니다.')).not.toBeInTheDocument();
+    expect(within(stickyDialog).queryByText('아직 수신된 위험 프레임이 없습니다.')).not.toBeInTheDocument();
   });
 
   it('keeps log headers pinned while the log list scrolls and exposes the RTSP third-quadrant tile', () => {

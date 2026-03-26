@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  evaluateHazardQualification,
   getBridgeApiUrl,
   getBridgeHttpBase,
+  type HazardRiskSample,
+  type HazardPopupDebounceMode,
   getRtspApiBase,
   getRtspPlaybackSrc,
   normalizeRtspPlaybackUrl,
 } from './useIndustrialMonitorRuntime';
+
+function sample(atMs: number, isRisk: boolean): HazardRiskSample {
+  return {
+    atMs,
+    isRisk,
+    severity: isRisk ? 'risk' : 'normal',
+  };
+}
 
 describe('getBridgeHttpBase', () => {
   it('derives the http base from a ws sensor bridge url', () => {
@@ -136,5 +147,57 @@ describe('getRtspApiBase', () => {
         protocol: 'http:',
       })
     ).toBe('http://192.168.1.206:8787');
+  });
+});
+
+describe('evaluateHazardQualification', () => {
+  it('opens under the default recent-3-frame mode when 2 of the last 3 samples are risk', () => {
+    const mode: HazardPopupDebounceMode = 'recent_three_frames_two_risks';
+
+    expect(
+      evaluateHazardQualification(
+        [
+          sample(0, false),
+          sample(400, true),
+          sample(800, false),
+          sample(1100, true),
+        ],
+        mode,
+        1500
+      )
+    ).toBe(true);
+  });
+
+  it('does not open under consecutive mode when the risk samples are split by a normal frame', () => {
+    const mode: HazardPopupDebounceMode = 'consecutive_two_risks';
+
+    expect(
+      evaluateHazardQualification(
+        [
+          sample(0, false),
+          sample(400, true),
+          sample(800, false),
+          sample(1100, true),
+        ],
+        mode,
+        1500
+      )
+    ).toBe(false);
+  });
+
+  it('opens under consecutive mode only when two recent risk samples are back-to-back', () => {
+    const mode: HazardPopupDebounceMode = 'consecutive_two_risks';
+
+    expect(
+      evaluateHazardQualification(
+        [
+          sample(0, false),
+          sample(500, true),
+          sample(900, true),
+        ],
+        mode,
+        1500
+      )
+    ).toBe(true);
   });
 });

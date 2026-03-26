@@ -39,9 +39,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
   const focusedChannel =
     channels.find(({ channel }) => channel.id === runtime.focusedChannelId) ?? channels[0];
   const focusedRuntime = getFocusedRuntime(runtime);
-  const popupChannel =
-    runtime.popupChannelId != null ? channels.find(({ channel }) => channel.id === runtime.popupChannelId) ?? null : null;
-  const popupRuntime = popupChannel?.runtime ?? EMPTY_INDUSTRIAL_MONITOR_RUNTIME;
+  const popupSnapshot = runtime.popupSnapshot;
   const highestRiskChannel =
     channels.find(({ runtime: channelRuntime }) => channelRuntime.alertTier === 'risk') ??
     channels.find(({ runtime: channelRuntime }) => channelRuntime.alertTier === 'caution') ??
@@ -133,12 +131,14 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         rtspUrlDraft={runtime.rtspUrlDraft}
         bboxVisible={runtime.bboxVisible}
         overlayDisplayMode={runtime.overlayDisplayMode}
+        hazardPopupDebounceMode={runtime.hazardPopupDebounceMode}
         setPopupDurationMs={runtime.setPopupDurationMs}
         setSensorPopupDurationMs={runtime.setSensorPopupDurationMs}
         startRtspStream={runtime.startRtspStream}
         stopRtspStream={runtime.stopRtspStream}
         updateBboxVisible={runtime.updateBboxVisible}
         updateOverlayDisplayMode={runtime.updateOverlayDisplayMode}
+        updateHazardPopupDebounceMode={runtime.updateHazardPopupDebounceMode}
         updateSensorBridgeDraft={runtime.updateSensorBridgeDraft}
         updateRtspControlDraft={runtime.updateRtspControlDraft}
         updateRtspUrlDraft={runtime.updateRtspUrlDraft}
@@ -154,14 +154,14 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
       />
 
       <HazardModal
-        channelLabel={popupChannel?.channel.channel ?? focusedChannel.channel.channel}
-        channelTitle={popupChannel?.channel.title ?? focusedChannel.channel.title}
+        channelLabel={popupSnapshot?.channelLabel ?? focusedChannel.channel.channel}
+        channelTitle={popupSnapshot?.channelTitle ?? focusedChannel.channel.title}
         bboxVisible={runtime.bboxVisible}
         onClose={runtime.closeChannelPopup}
         overlayDisplayMode={runtime.overlayDisplayMode}
-        open={popupChannel !== null}
-        runtime={popupRuntime}
-        summary={popupChannel ? getAlertSummary(popupRuntime) : getAlertSummary(focusedRuntime)}
+        open={popupSnapshot !== null}
+        runtime={popupSnapshot?.runtime ?? EMPTY_INDUSTRIAL_MONITOR_RUNTIME}
+        summary={popupSnapshot?.summary ?? getAlertSummary(focusedRuntime)}
       />
 
       <LogsModal

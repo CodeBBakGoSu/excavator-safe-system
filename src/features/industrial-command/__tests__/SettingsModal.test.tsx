@@ -92,6 +92,7 @@ function createCallbackRecorder() {
     updateRtspControlDraft: vi.fn(),
     updateRtspUrlDraft: vi.fn(),
     updateOverlayDisplayMode: vi.fn(),
+    updateHazardPopupDebounceMode: vi.fn(),
     setPopupDurationMs: vi.fn(),
     setSensorPopupDurationMs: vi.fn(),
     applyWsUrl: vi.fn(),
@@ -113,6 +114,9 @@ function SettingsWorkflowHarness({
   const [rtspControlDraft, setRtspControlDraft] = useState('http://initial-rtsp-control');
   const [rtspUrlDraft, setRtspUrlDraft] = useState('rtsp://initial-camera/stream');
   const [overlayDisplayMode, setOverlayDisplayMode] = useState<'always' | 'alert' | 'risk'>('always');
+  const [hazardPopupDebounceMode, setHazardPopupDebounceMode] = useState<
+    'recent_three_frames_two_risks' | 'consecutive_two_risks'
+  >('recent_three_frames_two_risks');
   const [popupDurationMs, setPopupDurationMs] = useState(2000);
   const [sensorPopupDurationMs, setSensorPopupDurationMs] = useState(3200);
 
@@ -130,6 +134,7 @@ function SettingsWorkflowHarness({
     rtspPlaybackUrl: null,
     bboxVisible: true,
     overlayDisplayMode,
+    hazardPopupDebounceMode,
     popupDurationMs,
     sensorPopupDurationMs,
     runtimeMap: {
@@ -141,6 +146,7 @@ function SettingsWorkflowHarness({
     configMessage: null,
     focusedChannelId: 1,
     popupChannelId: null,
+    popupSnapshot: null,
     sensorConnectionStatus: 'idle',
     sensorReconnectAttempt: 0,
     sensorSettingsMessage: null,
@@ -171,6 +177,10 @@ function SettingsWorkflowHarness({
     updateOverlayDisplayMode: (value: 'always' | 'alert' | 'risk') => {
       recorder.updateOverlayDisplayMode(value);
       setOverlayDisplayMode(value);
+    },
+    updateHazardPopupDebounceMode: (value: 'recent_three_frames_two_risks' | 'consecutive_two_risks') => {
+      recorder.updateHazardPopupDebounceMode(value);
+      setHazardPopupDebounceMode(value);
     },
     setPopupDurationMs: (value: number) => {
       recorder.setPopupDurationMs(value);
@@ -230,6 +240,7 @@ describe('SettingsModal', () => {
     expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://initial-camera/stream');
     expect(screen.getByLabelText('BBOX 표시 여부')).toHaveValue('true');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('always');
+    expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('recent_three_frames_two_risks');
     expect(screen.getByLabelText('위험 팝업 시간(ms)')).toHaveValue(2000);
     expect(screen.getByLabelText('현장 상태 팝업 시간(ms)')).toHaveValue(3200);
 
@@ -248,6 +259,9 @@ describe('SettingsModal', () => {
     fireEvent.change(screen.getByLabelText('박스 표시 조건'), {
       target: { value: 'risk' },
     });
+    fireEvent.change(screen.getByLabelText('위험 팝업 감지 방식'), {
+      target: { value: 'consecutive_two_risks' },
+    });
     fireEvent.change(screen.getByLabelText('위험 팝업 시간(ms)'), {
       target: { value: '4500' },
     });
@@ -260,11 +274,13 @@ describe('SettingsModal', () => {
     expect(recorder.updateRtspControlDraft).toHaveBeenLastCalledWith('http://192.168.1.7:10000');
     expect(recorder.updateRtspUrlDraft).toHaveBeenLastCalledWith('rtsp://10.0.0.5/live.sdp');
     expect(recorder.updateOverlayDisplayMode).toHaveBeenLastCalledWith('risk');
+    expect(recorder.updateHazardPopupDebounceMode).toHaveBeenLastCalledWith('consecutive_two_risks');
     expect(screen.getByLabelText('CCTV WebSocket URL')).toHaveValue('ws://localhost:9999/frames');
     expect(screen.getByLabelText('Sensor Bridge WebSocket URL')).toHaveValue('ws://localhost:8787');
     expect(screen.getByLabelText('RTSP Control API URL')).toHaveValue('http://192.168.1.7:10000');
     expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://10.0.0.5/live.sdp');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('risk');
+    expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('consecutive_two_risks');
     expect(screen.getByLabelText('위험 팝업 시간(ms)')).toHaveValue(4500);
     expect(screen.getByLabelText('현장 상태 팝업 시간(ms)')).toHaveValue(6200);
     expect(recorder.setPopupDurationMs).not.toHaveBeenCalled();
@@ -304,6 +320,9 @@ describe('SettingsModal', () => {
     fireEvent.change(screen.getByLabelText('RTSP Control API URL'), {
       target: { value: 'http://192.168.1.7:10000' },
     });
+    fireEvent.change(screen.getByLabelText('위험 팝업 감지 방식'), {
+      target: { value: 'consecutive_two_risks' },
+    });
     fireEvent.change(screen.getByLabelText('위험 팝업 시간(ms)'), {
       target: { value: '4500' },
     });
@@ -319,6 +338,7 @@ describe('SettingsModal', () => {
 
     expect(window.localStorage.getItem('excavator-safe-system:hazard-popup-duration-ms')).toBe('4500');
     expect(window.localStorage.getItem('excavator-safe-system:field-state-popup-duration-ms')).toBe('6200');
+    expect(window.localStorage.getItem('excavator-safe-system:hazard-popup-debounce-mode')).toBe('consecutive_two_risks');
     expect(window.localStorage.getItem('excavator-safe-system:rtsp-control-api-url')).toBe('http://192.168.1.7:10000');
   });
 });

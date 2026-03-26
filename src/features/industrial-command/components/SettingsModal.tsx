@@ -16,6 +16,7 @@ interface SettingsModalProps {
   rtspStreamMessage: string | null;
   bboxVisible: boolean;
   overlayDisplayMode: 'always' | 'alert' | 'risk';
+  hazardPopupDebounceMode: 'recent_three_frames_two_risks' | 'consecutive_two_risks';
   popupDurationMs: number;
   sensorPopupDurationMs: number;
   configMessage: string | null;
@@ -27,6 +28,7 @@ interface SettingsModalProps {
   updateRtspUrlDraft: (value: string) => void;
   updateBboxVisible: (value: boolean) => void;
   updateOverlayDisplayMode: (value: 'always' | 'alert' | 'risk') => void;
+  updateHazardPopupDebounceMode: (value: 'recent_three_frames_two_risks' | 'consecutive_two_risks') => void;
   setPopupDurationMs: (value: number) => void;
   setSensorPopupDurationMs: (value: number) => void;
   applyWsUrl: () => void;
@@ -47,6 +49,7 @@ export function SettingsModal({
   rtspStreamMessage,
   bboxVisible,
   overlayDisplayMode,
+  hazardPopupDebounceMode,
   popupDurationMs,
   sensorPopupDurationMs,
   configMessage,
@@ -58,6 +61,7 @@ export function SettingsModal({
   updateRtspUrlDraft,
   updateBboxVisible,
   updateOverlayDisplayMode,
+  updateHazardPopupDebounceMode,
   setPopupDurationMs,
   setSensorPopupDurationMs,
   applyWsUrl,
@@ -199,6 +203,22 @@ export function SettingsModal({
               <option value="always">항상</option>
               <option value="alert">경고/위험일 때</option>
               <option value="risk">위험일 때만</option>
+            </select>
+          </label>
+
+          <label className="space-y-2">
+            <span className="text-sm font-medium text-on-surface">위험 팝업 감지 방식</span>
+            <select
+              className="w-full rounded-2xl border border-outline/40 bg-background px-4 py-3 text-sm text-on-surface outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/30"
+              onChange={(event) =>
+                updateHazardPopupDebounceMode(
+                  event.target.value as 'recent_three_frames_two_risks' | 'consecutive_two_risks'
+                )
+              }
+              value={hazardPopupDebounceMode}
+            >
+              <option value="recent_three_frames_two_risks">최근 3프레임 중 위험 2회 감지</option>
+              <option value="consecutive_two_risks">위험 2프레임 연속 감지</option>
             </select>
           </label>
 
