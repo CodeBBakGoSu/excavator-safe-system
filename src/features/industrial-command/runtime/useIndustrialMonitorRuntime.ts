@@ -32,10 +32,12 @@ const TELEGRAM_AUTO_SYNC_STORAGE_KEY = 'excavator-safe-system:telegram-auto-sync
 const TELEGRAM_SENSOR_COOLDOWN_STORAGE_KEY = 'excavator-safe-system:telegram-sensor-cooldown-ms';
 const BBOX_VISIBLE_STORAGE_KEY = 'excavator-safe-system:bbox-visible';
 const OVERLAY_DISPLAY_MODE_STORAGE_KEY = 'excavator-safe-system:overlay-display-mode';
+const CAMERA_DISPLAY_COUNT_STORAGE_KEY = 'excavator-safe-system:camera-display-count';
 const HAZARD_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:hazard-popup-duration-ms';
 const FIELD_STATE_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:field-state-popup-duration-ms';
 const HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY = 'excavator-safe-system:hazard-popup-debounce-mode';
 const HAZARD_QUALIFICATION_WINDOW_MS = 1500;
+const DEFAULT_TELEGRAM_BOT_TOKEN = '8385397257:AAFS3n_zuXKfHW0K0lP2uk4rxz7pWb3AIVk';
 
 export const INDUSTRIAL_MONITOR_CHANNELS: ChannelConfig[] = [
   { id: 1, cameraKey: 'cam1', channel: 'CH-01', title: '굴착기 구역 A', sourceType: 'cctv' },
@@ -88,6 +90,7 @@ export type StreamLogEntry = {
 export type LogStreamType = 'cctv' | 'sensor';
 export type RtspStreamStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'failed';
 export type OverlayDisplayMode = 'always' | 'alert' | 'risk';
+export type CameraDisplayCount = 2 | 4;
 export type HazardPopupDebounceMode = 'recent_three_frames_two_risks' | 'consecutive_two_risks';
 
 export type HazardRiskSample = {
@@ -619,7 +622,7 @@ function loadStoredSensorUrl(defaultValue = '') {
   return window.localStorage.getItem(SENSOR_WS_STORAGE_KEY)?.trim() || defaultValue;
 }
 
-function loadStoredTelegramBotToken(defaultValue = '') {
+function loadStoredTelegramBotToken(defaultValue = DEFAULT_TELEGRAM_BOT_TOKEN) {
   if (typeof window === 'undefined') return defaultValue;
   return window.localStorage.getItem(TELEGRAM_BOT_TOKEN_STORAGE_KEY)?.trim() || defaultValue;
 }
@@ -701,6 +704,14 @@ function loadStoredOverlayDisplayMode(defaultValue: OverlayDisplayMode = 'always
   if (typeof window === 'undefined') return defaultValue;
   const stored = window.localStorage.getItem(OVERLAY_DISPLAY_MODE_STORAGE_KEY);
   if (stored === 'always' || stored === 'alert' || stored === 'risk') return stored;
+  return defaultValue;
+}
+
+function loadStoredCameraDisplayCount(defaultValue: CameraDisplayCount = 4) {
+  if (typeof window === 'undefined') return defaultValue;
+  const stored = window.localStorage.getItem(CAMERA_DISPLAY_COUNT_STORAGE_KEY);
+  if (stored === '2') return 2;
+  if (stored === '4') return 4;
   return defaultValue;
 }
 
@@ -893,6 +904,8 @@ export interface IndustrialMonitorRuntime {
   rtspPlaybackUrl: string | null;
   rtspStreamStatus: RtspStreamStatus;
   rtspStreamMessage: string | null;
+  cameraDisplayCount: CameraDisplayCount;
+  hiddenChannelIds: number[];
   bboxVisible: boolean;
   overlayDisplayMode: OverlayDisplayMode;
   hazardPopupDebounceMode: HazardPopupDebounceMode;
@@ -934,6 +947,7 @@ export interface IndustrialMonitorRuntime {
   updateSensorBridgeDraft: (value: string) => void;
   updateRtspControlDraft: (value: string) => void;
   updateRtspUrlDraft: (value: string) => void;
+  updateCameraDisplayCount: (value: CameraDisplayCount) => void;
   updateBboxVisible: (value: boolean) => void;
   updateOverlayDisplayMode: (value: OverlayDisplayMode) => void;
   updateHazardPopupDebounceMode: (value: HazardPopupDebounceMode) => void;
@@ -961,6 +975,9 @@ export interface IndustrialMonitorRuntime {
   closeChannelPopup: () => void;
   openSensorSnapshotPreview: () => void;
   closeSensorPopup: () => void;
+  hideChannel: (channelId: number) => void;
+  showChannel: (channelId: number) => void;
+  showAllChannels: () => void;
   updateChannelImageNaturalSize: (channelId: number, width: number, height: number) => void;
   saveLogsToServer: (type: LogStreamType) => Promise<void>;
 }
@@ -977,6 +994,8 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [rtspPlaybackUrl, setRtspPlaybackUrl] = useState<string | null>(null);
   const [rtspStreamStatus, setRtspStreamStatus] = useState<RtspStreamStatus>('idle');
   const [rtspStreamMessage, setRtspStreamMessage] = useState<string | null>(null);
+  const [cameraDisplayCount, setCameraDisplayCount] = useState<CameraDisplayCount>(() => loadStoredCameraDisplayCount(4));
+  const [hiddenChannelIds, setHiddenChannelIds] = useState<number[]>([]);
   const [bboxVisible, setBboxVisible] = useState(() => loadStoredBboxVisible(true));
   const [overlayDisplayMode, setOverlayDisplayMode] = useState<OverlayDisplayMode>(() =>
     loadStoredOverlayDisplayMode('always')
@@ -1001,13 +1020,13 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [fieldStateMessage, setFieldStateMessage] = useState<string | null>(null);
   const [sensorSnapshot, setSensorSnapshot] = useState<FrontendStateSnapshot | null>(null);
   const [sensorPopupOpen, setSensorPopupOpen] = useState(false);
-  const [telegramBotToken, setTelegramBotToken] = useState(() => loadStoredTelegramBotToken(''));
+  const [telegramBotToken, setTelegramBotToken] = useState(() => loadStoredTelegramBotToken());
   const [telegramSettingsMessage, setTelegramSettingsMessage] = useState<string | null>(null);
   const [telegramBotTokenConfigured, setTelegramBotTokenConfigured] = useState(() =>
-    Boolean(loadStoredTelegramBotToken(''))
+    Boolean(loadStoredTelegramBotToken())
   );
   const [telegramBotTokenMasked, setTelegramBotTokenMasked] = useState(() =>
-    maskTelegramBotToken(loadStoredTelegramBotToken(''))
+    maskTelegramBotToken(loadStoredTelegramBotToken())
   );
   const [telegramBotTokenDraft, setTelegramBotTokenDraft] = useState('');
   const [telegramSelectedChatIds, setTelegramSelectedChatIds] = useState<string[]>(() => loadStoredTelegramChatIds([]));
@@ -1049,6 +1068,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const frameTimesRef = useRef<Record<number, number[]>>({});
   const recentRiskSamplesRef = useRef<Record<number, HazardRiskSample[]>>({});
   const runtimeMapRef = useRef<Record<number, ChannelRuntimeState>>(createRuntimeMap());
+  const hiddenChannelIdsRef = useRef<number[]>([]);
   const manualCloseSocketsRef = useRef(new WeakSet<WebSocket>());
   const manualCloseSensorSocketsRef = useRef(new WeakSet<WebSocket>());
   const telegramLastSensorAlertSentAtRef = useRef(0);
@@ -1070,6 +1090,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const channelById = useMemo(
     () =>
       Object.fromEntries(INDUSTRIAL_MONITOR_CHANNELS.map((channel) => [channel.id, channel])) as Record<number, ChannelConfig>,
+    []
+  );
+
+  const getVisibleChannelIds = useCallback(
+    (hiddenIds: number[], displayCount: CameraDisplayCount) =>
+      INDUSTRIAL_MONITOR_CHANNELS.filter((channel) => !hiddenIds.includes(channel.id))
+        .slice(0, displayCount)
+        .map((channel) => channel.id),
     []
   );
 
@@ -1950,6 +1978,21 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setTelegramSettingsMessage(null);
   }, []);
 
+  const updateCameraDisplayCount = useCallback(
+    (value: CameraDisplayCount) => {
+      setCameraDisplayCount(value);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(CAMERA_DISPLAY_COUNT_STORAGE_KEY, String(value));
+      }
+
+      const visibleChannelIds = getVisibleChannelIds(hiddenChannelIdsRef.current, value);
+      if (visibleChannelIds.length > 0 && !visibleChannelIds.includes(focusedChannelId)) {
+        setFocusedChannelId(visibleChannelIds[0]);
+      }
+    },
+    [focusedChannelId, getVisibleChannelIds]
+  );
+
   const updateOverlayDisplayMode = useCallback((value: OverlayDisplayMode) => {
     setOverlayDisplayMode(value);
     if (typeof window !== 'undefined') {
@@ -2208,6 +2251,36 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     setSensorPopupOpen(false);
   }, [clearSensorPopupTimer]);
 
+  const hideChannel = useCallback(
+    (channelId: number) => {
+      setHiddenChannelIds((prev) => {
+        if (prev.includes(channelId)) return prev;
+
+        const next = [...prev, channelId];
+        hiddenChannelIdsRef.current = next;
+        const visibleChannelIds = getVisibleChannelIds(next, cameraDisplayCount);
+        if (visibleChannelIds.length > 0 && !visibleChannelIds.includes(focusedChannelId)) {
+          setFocusedChannelId(visibleChannelIds[0]);
+        }
+        return next;
+      });
+    },
+    [cameraDisplayCount, focusedChannelId, getVisibleChannelIds]
+  );
+
+  const showChannel = useCallback((channelId: number) => {
+    setHiddenChannelIds((prev) => {
+      const next = prev.filter((entry) => entry !== channelId);
+      hiddenChannelIdsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const showAllChannels = useCallback(() => {
+    hiddenChannelIdsRef.current = [];
+    setHiddenChannelIds([]);
+  }, []);
+
   useEffect(() => {
     syncRtspRuntime(rtspStreamStatus);
   }, [rtspStreamStatus, syncRtspRuntime]);
@@ -2224,6 +2297,8 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     rtspPlaybackUrl,
     rtspStreamStatus,
     rtspStreamMessage,
+    cameraDisplayCount,
+    hiddenChannelIds,
     bboxVisible,
     overlayDisplayMode,
     hazardPopupDebounceMode,
@@ -2265,6 +2340,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     updateSensorBridgeDraft,
     updateRtspControlDraft,
     updateRtspUrlDraft,
+    updateCameraDisplayCount,
     updateTelegramBotTokenDraft,
     updateTelegramChatSelection,
     updateTelegramAutoSync,
@@ -2292,6 +2368,9 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     closeChannelPopup,
     openSensorSnapshotPreview,
     closeSensorPopup,
+    hideChannel,
+    showChannel,
+    showAllChannels,
     updateChannelImageNaturalSize,
     saveLogsToServer,
   };

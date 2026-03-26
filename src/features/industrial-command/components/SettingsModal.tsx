@@ -22,6 +22,7 @@ interface SettingsModalProps {
   rtspUrlDraft: string;
   rtspStreamStatus: 'idle' | 'starting' | 'running' | 'stopped' | 'failed';
   rtspStreamMessage: string | null;
+  cameraDisplayCount: 2 | 4;
   bboxVisible: boolean;
   overlayDisplayMode: 'always' | 'alert' | 'risk';
   hazardPopupDebounceMode: 'recent_three_frames_two_risks' | 'consecutive_two_risks';
@@ -48,6 +49,7 @@ interface SettingsModalProps {
   updateSensorBridgeDraft: (value: string) => void;
   updateRtspControlDraft: (value: string) => void;
   updateRtspUrlDraft: (value: string) => void;
+  updateCameraDisplayCount: (value: 2 | 4) => void;
   updateTelegramBotTokenDraft: (value: string) => void;
   updateTelegramChatSelection: (chatId: string, selected: boolean) => void;
   updateTelegramAutoSync: (value: boolean) => void;
@@ -75,6 +77,7 @@ export function SettingsModal({
   rtspUrlDraft,
   rtspStreamStatus,
   rtspStreamMessage,
+  cameraDisplayCount,
   bboxVisible,
   overlayDisplayMode,
   hazardPopupDebounceMode,
@@ -96,6 +99,7 @@ export function SettingsModal({
   updateSensorBridgeDraft,
   updateRtspControlDraft,
   updateRtspUrlDraft,
+  updateCameraDisplayCount,
   updateTelegramBotTokenDraft,
   updateTelegramChatSelection,
   updateTelegramAutoSync,
@@ -117,6 +121,7 @@ export function SettingsModal({
   const titleId = useId();
   const descriptionId = useId();
   const [bboxVisibleDraft, setBboxVisibleDraft] = useState(bboxVisible);
+  const [cameraDisplayCountDraft, setCameraDisplayCountDraft] = useState<2 | 4>(cameraDisplayCount);
   const [overlayDisplayModeDraft, setOverlayDisplayModeDraft] = useState(overlayDisplayMode);
   const [hazardPopupDebounceModeDraft, setHazardPopupDebounceModeDraft] = useState(hazardPopupDebounceMode);
   const [hazardDurationDraft, setHazardDurationDraft] = useState(toSecondsDraft(popupDurationMs));
@@ -127,12 +132,13 @@ export function SettingsModal({
     if (!open) return;
 
     setBboxVisibleDraft(bboxVisible);
+    setCameraDisplayCountDraft(cameraDisplayCount);
     setOverlayDisplayModeDraft(overlayDisplayMode);
     setHazardPopupDebounceModeDraft(hazardPopupDebounceMode);
     setHazardDurationDraft(toSecondsDraft(popupDurationMs));
     setFieldStateDurationDraft(toSecondsDraft(sensorPopupDurationMs));
     setDurationError(null);
-  }, [bboxVisible, hazardPopupDebounceMode, open, overlayDisplayMode, popupDurationMs, sensorPopupDurationMs]);
+  }, [bboxVisible, cameraDisplayCount, hazardPopupDebounceMode, open, overlayDisplayMode, popupDurationMs, sensorPopupDurationMs]);
 
   useEffect(() => {
     if (!open) return;
@@ -263,6 +269,18 @@ export function SettingsModal({
               </label>
 
               <label className="space-y-2">
+                <span className="text-sm font-medium text-on-surface">카메라 화면 개수</span>
+                <select
+                  className="w-full rounded-2xl border border-outline/40 bg-background px-4 py-3 text-sm text-on-surface outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/30"
+                  onChange={(event) => setCameraDisplayCountDraft(Number(event.target.value) as 2 | 4)}
+                  value={String(cameraDisplayCountDraft)}
+                >
+                  <option value="2">2개</option>
+                  <option value="4">4개</option>
+                </select>
+              </label>
+
+              <label className="space-y-2">
                 <span className="text-sm font-medium text-on-surface">박스 표시 조건</span>
                 <select
                   className="w-full rounded-2xl border border-outline/40 bg-background px-4 py-3 text-sm text-on-surface outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/30"
@@ -329,6 +347,7 @@ export function SettingsModal({
 
                   setDurationError(null);
                   updateBboxVisible(bboxVisibleDraft);
+                  updateCameraDisplayCount(cameraDisplayCountDraft);
                   updateOverlayDisplayMode(overlayDisplayModeDraft);
                   updateHazardPopupDebounceMode(hazardPopupDebounceModeDraft);
                   setPopupDurationMs(nextHazardDuration);

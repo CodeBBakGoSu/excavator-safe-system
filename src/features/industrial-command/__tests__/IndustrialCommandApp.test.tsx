@@ -287,6 +287,42 @@ describe('IndustrialCommandApp', () => {
     expect(monitorRegion.compareDocumentPosition(eventFeedHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('switches to a two-camera layout from settings and only shows two enlarged tiles', () => {
+    const { container } = emitLiveData();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.change(screen.getByLabelText('카메라 화면 개수'), {
+      target: { value: '2' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '표시/팝업 적용' }));
+    fireEvent.click(screen.getByRole('button', { name: '설정 닫기' }));
+
+    const monitorGrid = container.querySelector('[data-testid="monitor-grid"]');
+
+    expect(screen.getAllByRole('button', { name: /CH-0[1-4]/ })).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'CH-01 굴착기 구역 A' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'CH-02 굴착기 구역 B' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'CH-03 RTSP 실시간 모니터' })).not.toBeInTheDocument();
+    expect(monitorGrid?.className).toContain('grid-cols-1');
+    expect(window.localStorage.getItem('excavator-safe-system:camera-display-count')).toBe('2');
+  });
+
+  it('hides a hovered camera tile and lets the operator restore it from the monitor header', () => {
+    emitLiveData();
+
+    const targetTile = screen.getByRole('button', { name: 'CH-02 굴착기 구역 B' });
+
+    fireEvent.mouseEnter(targetTile);
+    fireEvent.click(within(targetTile).getByRole('button', { name: '굴착기 구역 B 끄기' }));
+
+    expect(screen.queryByRole('button', { name: 'CH-02 굴착기 구역 B' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'CH-02 다시 켜기' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'CH-02 다시 켜기' }));
+
+    expect(screen.getByRole('button', { name: 'CH-02 굴착기 구역 B' })).toBeInTheDocument();
+  });
+
   it('persists the edited sensor alert cooldown when telegram settings are applied', async () => {
     render(<App />);
 

@@ -34,10 +34,16 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
     runtime: runtime.runtimeMap[channel.id] ?? EMPTY_INDUSTRIAL_MONITOR_RUNTIME,
     isFocused: runtime.focusedChannelId === channel.id,
   }));
+  const visibleChannels = channels
+    .filter(({ channel }) => !runtime.hiddenChannelIds.includes(channel.id))
+    .slice(0, runtime.cameraDisplayCount);
 
   const connectedCount = channels.filter(({ runtime: channelRuntime }) => channelRuntime.connectionStatus === 'connected').length;
   const focusedChannel =
-    channels.find(({ channel }) => channel.id === runtime.focusedChannelId) ?? channels[0];
+    visibleChannels.find(({ channel }) => channel.id === runtime.focusedChannelId) ??
+    visibleChannels[0] ??
+    channels.find(({ channel }) => channel.id === runtime.focusedChannelId) ??
+    channels[0];
   const focusedRuntime = getFocusedRuntime(runtime);
   const popupSnapshot = runtime.popupSnapshot;
   const highestRiskChannel =
@@ -81,9 +87,14 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:gap-2.5">
           <MonitorSection
             bboxVisible={runtime.bboxVisible}
+            cameraDisplayCount={runtime.cameraDisplayCount}
             channels={channels}
+            hiddenChannelIds={runtime.hiddenChannelIds}
             onFocusChannel={runtime.focusChannel}
+            onHideChannel={runtime.hideChannel}
             onImageLoad={runtime.updateChannelImageNaturalSize}
+            onShowAllChannels={runtime.showAllChannels}
+            onShowChannel={runtime.showChannel}
             overlayDisplayMode={runtime.overlayDisplayMode}
             rtspPlaybackUrl={runtime.rtspPlaybackUrl}
             rtspStreamMessage={runtime.rtspStreamMessage}
@@ -122,6 +133,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         rtspStreamMessage={runtime.rtspStreamMessage}
         rtspStreamStatus={runtime.rtspStreamStatus}
         rtspUrlDraft={runtime.rtspUrlDraft}
+        cameraDisplayCount={runtime.cameraDisplayCount}
         bboxVisible={runtime.bboxVisible}
         overlayDisplayMode={runtime.overlayDisplayMode}
         hazardPopupDebounceMode={runtime.hazardPopupDebounceMode}
@@ -129,6 +141,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         setSensorPopupDurationMs={runtime.setSensorPopupDurationMs}
         startRtspStream={runtime.startRtspStream}
         stopRtspStream={runtime.stopRtspStream}
+        updateCameraDisplayCount={runtime.updateCameraDisplayCount}
         updateBboxVisible={runtime.updateBboxVisible}
         updateOverlayDisplayMode={runtime.updateOverlayDisplayMode}
         updateHazardPopupDebounceMode={runtime.updateHazardPopupDebounceMode}

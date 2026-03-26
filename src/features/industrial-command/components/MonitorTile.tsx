@@ -13,6 +13,7 @@ interface MonitorTileProps {
   runtime: ChannelRuntimeState;
   isFocused: boolean;
   onSelect: () => void;
+  onHide: () => void;
   onImageLoad: (width: number, height: number) => void;
   bboxVisible: boolean;
   overlayDisplayMode: 'always' | 'alert' | 'risk';
@@ -61,6 +62,7 @@ export function MonitorTile({
   runtime,
   isFocused,
   onSelect,
+  onHide,
   onImageLoad,
   bboxVisible,
   overlayDisplayMode,
@@ -76,17 +78,35 @@ export function MonitorTile({
   const showBoxes = bboxVisible && shouldRenderBoxes(overlayDisplayMode, runtime.alertTier);
 
   return (
-    <button
+    <div
       aria-label={`${channel.channel} ${channel.title}`}
       className={cn(
-        'ghost-border group flex w-full flex-col overflow-hidden rounded-[20px] bg-background text-left shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+        'ghost-border group relative flex w-full flex-col overflow-hidden rounded-[20px] bg-background text-left shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
         runtime.alertTier === 'risk' && 'ring-2 ring-error/60 shadow-lg shadow-error/10',
         runtime.alertTier === 'caution' && 'ring-1 ring-tertiary/50 shadow-lg shadow-tertiary/10',
         isFocused && 'ring-2 ring-primary'
       )}
       onClick={onSelect}
-      type="button"
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
+      <button
+        aria-label={`${channel.title} 끄기`}
+        className="absolute right-3 top-3 z-10 rounded-full border border-outline/40 bg-black/65 px-3 py-1.5 text-xs font-medium text-white opacity-0 transition-opacity hover:bg-black/80 focus-visible:opacity-100 group-hover:opacity-100"
+        onClick={(event) => {
+          event.stopPropagation();
+          onHide();
+        }}
+        type="button"
+      >
+        끄기
+      </button>
       <div className="flex flex-wrap items-start justify-between gap-2 border-b border-outline/20 px-3 py-3 sm:px-3.5">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -124,7 +144,7 @@ export function MonitorTile({
         </div>
       </div>
 
-        <div className="relative aspect-video overflow-hidden bg-background">
+      <div className="relative aspect-video overflow-hidden bg-background">
         {isRtspTile && rtspPlaybackUrl ? (
           <RtspFramePlayer src={rtspPlaybackUrl} title={channel.title} />
         ) : runtime.currentImage ? (
@@ -176,7 +196,7 @@ export function MonitorTile({
           </div>
         )}
       </div>
-    </button>
+    </div>
   );
 }
 

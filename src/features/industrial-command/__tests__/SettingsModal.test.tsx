@@ -98,6 +98,7 @@ function createCallbackRecorder() {
     updateSensorBridgeDraft: vi.fn(),
     updateRtspControlDraft: vi.fn(),
     updateRtspUrlDraft: vi.fn(),
+    updateCameraDisplayCount: vi.fn(),
     updateOverlayDisplayMode: vi.fn(),
     updateHazardPopupDebounceMode: vi.fn(),
     setPopupDurationMs: vi.fn(),
@@ -127,6 +128,7 @@ function SettingsWorkflowHarness({
   const [sensorBridgeDraft, setSensorBridgeDraft] = useState('ws://initial-sensor');
   const [rtspControlDraft, setRtspControlDraft] = useState('http://initial-rtsp-control');
   const [rtspUrlDraft, setRtspUrlDraft] = useState('rtsp://initial-camera/stream');
+  const [cameraDisplayCount, setCameraDisplayCount] = useState<2 | 4>(4);
   const [overlayDisplayMode, setOverlayDisplayMode] = useState<'always' | 'alert' | 'risk'>('always');
   const [hazardPopupDebounceMode, setHazardPopupDebounceMode] = useState<
     'recent_three_frames_two_risks' | 'consecutive_two_risks'
@@ -150,6 +152,8 @@ function SettingsWorkflowHarness({
     rtspStreamStatus: 'idle',
     rtspStreamMessage: null,
     rtspPlaybackUrl: null,
+    cameraDisplayCount,
+    hiddenChannelIds: [],
     bboxVisible: true,
     overlayDisplayMode,
     hazardPopupDebounceMode,
@@ -215,6 +219,10 @@ function SettingsWorkflowHarness({
       recorder.updateRtspControlDraft(value);
       setRtspControlDraft(value);
     },
+    updateCameraDisplayCount: (value: 2 | 4) => {
+      recorder.updateCameraDisplayCount(value);
+      setCameraDisplayCount(value);
+    },
     updateBboxVisible: noop,
     updateOverlayDisplayMode: (value: 'always' | 'alert' | 'risk') => {
       recorder.updateOverlayDisplayMode(value);
@@ -262,6 +270,9 @@ function SettingsWorkflowHarness({
       recorder.updateTelegramSensorCooldownDraft(value);
       setTelegramSensorCooldownDraft(value);
     },
+    hideChannel: noop,
+    showChannel: noop,
+    showAllChannels: noop,
     syncTelegramChats: recorder.syncTelegramChats,
     applyTelegramSettings: recorder.applyTelegramSettings,
     openChannelPopup: noop,
@@ -301,6 +312,7 @@ describe('SettingsModal', () => {
     expect(screen.getByLabelText('Sensor Bridge WebSocket URL')).toHaveValue('ws://initial-sensor');
     expect(screen.getByLabelText('RTSP Control API URL')).toHaveValue('http://initial-rtsp-control');
     expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://initial-camera/stream');
+    expect(screen.getByLabelText('카메라 화면 개수')).toHaveValue('4');
     expect(screen.getByLabelText('BBOX 표시 여부')).toHaveValue('true');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('always');
     expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('recent_three_frames_two_risks');
@@ -336,6 +348,9 @@ describe('SettingsModal', () => {
     });
     fireEvent.change(screen.getByLabelText('RTSP URL'), {
       target: { value: 'rtsp://10.0.0.5/live.sdp' },
+    });
+    fireEvent.change(screen.getByLabelText('카메라 화면 개수'), {
+      target: { value: '2' },
     });
     fireEvent.change(screen.getByLabelText('박스 표시 조건'), {
       target: { value: 'risk' },
@@ -374,6 +389,7 @@ describe('SettingsModal', () => {
     expect(screen.getByLabelText('Sensor Bridge WebSocket URL')).toHaveValue('ws://localhost:8787');
     expect(screen.getByLabelText('RTSP Control API URL')).toHaveValue('http://192.168.1.7:10000');
     expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://10.0.0.5/live.sdp');
+    expect(screen.getByLabelText('카메라 화면 개수')).toHaveValue('2');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('risk');
     expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('consecutive_two_risks');
     expect(screen.getByLabelText('위험 팝업 시간(초)')).toHaveValue(4.5);
@@ -396,6 +412,7 @@ describe('SettingsModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '표시/팝업 적용' }));
 
+    expect(recorder.updateCameraDisplayCount).toHaveBeenCalledWith(2);
     expect(recorder.updateOverlayDisplayMode).toHaveBeenCalledWith('risk');
     expect(recorder.updateHazardPopupDebounceMode).toHaveBeenCalledWith('consecutive_two_risks');
     expect(recorder.setPopupDurationMs).toHaveBeenCalledWith(4500);
