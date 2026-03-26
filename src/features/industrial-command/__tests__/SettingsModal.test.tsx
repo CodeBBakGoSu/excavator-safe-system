@@ -468,4 +468,22 @@ describe('SettingsModal', () => {
     expect(window.localStorage.getItem('excavator-safe-system:hazard-popup-debounce-mode')).toBe('consecutive_two_risks');
     expect(window.localStorage.getItem('excavator-safe-system:rtsp-control-api-url')).toBe('http://192.168.1.7:10000');
   });
+
+  it('uses the field defaults when no saved runtime settings exist', () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+
+    expect(screen.getByLabelText('CCTV WebSocket URL')).toHaveValue('ws://10.161.110.223:8876');
+    expect(screen.getByLabelText('Sensor Bridge WebSocket URL')).toHaveValue('ws://10.161.110.223:8787');
+    expect(screen.getByLabelText('RTSP Control API URL')).toHaveValue('http://10.161.110.223:8787');
+    expect(screen.getByLabelText('RTSP URL')).toHaveValue('rtsp://admin:total!23@192.168.1.100:554');
+    expect(screen.getByLabelText('카메라 화면 개수')).toHaveValue('4');
+    expect(screen.getByLabelText('BBOX 표시 여부')).toHaveValue('true');
+    expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('alert');
+    expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('recent_three_frames_two_risks');
+    expect(screen.getByLabelText('위험 팝업 시간(초)')).toHaveValue(2);
+    expect(screen.getByText(/TOKEN 8385/i)).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /기현/ })).not.toBeInTheDocument();
+  });
 });

@@ -204,7 +204,7 @@ describe('createLightControlBridge', () => {
       timestamp: '2026-03-27T10:00:00+09:00',
     });
 
-    expect(createConnection).toHaveBeenCalledWith({ host: '192.168.1.7', port: 8888 });
+    expect(createConnection).toHaveBeenCalledWith({ host: '192.168.10.7', port: 8888 });
     expect(writes).toEqual([
       JSON.stringify({
         type: 'light_control',

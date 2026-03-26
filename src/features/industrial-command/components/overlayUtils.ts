@@ -13,10 +13,13 @@ export function isRelationHighlighted(frame: FrameSnapshot, object: DetectedObje
 
 export function getOverlayObjects(runtime: ChannelRuntimeState, mode: 'always' | 'alert' | 'risk') {
   const highlightTrackIds = new Set(runtime.visualFrame.overlayTrackIds);
+  const relationTrackIds = new Set(runtime.visualFrame.relationTrackIds);
   const sourceObjects =
     mode === 'always'
       ? runtime.visualFrame.objects
-      : runtime.visualFrame.objects.filter((object) => object.trackId != null && highlightTrackIds.has(object.trackId));
+      : runtime.visualFrame.objects.filter(
+          (object) => object.trackId != null && (highlightTrackIds.has(object.trackId) || relationTrackIds.has(object.trackId))
+        );
 
   return sourceObjects.map((object) => ({
     object,

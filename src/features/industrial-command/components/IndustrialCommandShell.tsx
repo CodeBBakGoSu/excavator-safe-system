@@ -84,7 +84,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
           totalCount={channels.length}
         />
 
-        <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:gap-2.5">
+        <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden lg:gap-2.5">
           <MonitorSection
             bboxVisible={runtime.bboxVisible}
             cameraDisplayCount={runtime.cameraDisplayCount}

@@ -15,7 +15,7 @@ export function TelemetrySection({ eventFeed }: TelemetrySectionProps) {
   const scrollableEvents = eventFeed.slice(3);
 
   return (
-    <aside className="ghost-border min-h-0 rounded-[22px] bg-surface p-2 shadow-sm sm:p-2.5 lg:max-h-[min(36vh,28rem)]">
+    <aside className="ghost-border min-h-0 overflow-hidden rounded-[22px] bg-surface p-2 shadow-sm sm:p-2.5 lg:max-h-[min(36vh,28rem)]">
       <section className="ghost-border flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] bg-surface-high p-3">
         <div className="flex items-start justify-between gap-3 border-b border-outline/20 pb-3">
           <div>

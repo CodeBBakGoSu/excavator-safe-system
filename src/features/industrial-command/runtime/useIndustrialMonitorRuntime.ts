@@ -37,6 +37,10 @@ const HAZARD_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:hazard-popup-du
 const FIELD_STATE_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:field-state-popup-duration-ms';
 const HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY = 'excavator-safe-system:hazard-popup-debounce-mode';
 const HAZARD_QUALIFICATION_WINDOW_MS = 1500;
+const DEFAULT_CCTV_WS_URL = 'ws://10.161.110.223:8876';
+const DEFAULT_SENSOR_BRIDGE_WS_URL = 'ws://10.161.110.223:8787';
+const DEFAULT_RTSP_CONTROL_API_URL = 'http://10.161.110.223:8787';
+const DEFAULT_RTSP_URL = 'rtsp://admin:total!23@192.168.1.100:554';
 const DEFAULT_TELEGRAM_BOT_TOKEN = '8385397257:AAFS3n_zuXKfHW0K0lP2uk4rxz7pWb3AIVk';
 
 export const INDUSTRIAL_MONITOR_CHANNELS: ChannelConfig[] = [
@@ -384,10 +388,13 @@ function shouldRenderTelegramBoxes(mode: OverlayDisplayMode, alertTier: ChannelR
 
 function getTelegramOverlayObjects(runtime: ChannelRuntimeState, mode: OverlayDisplayMode) {
   const highlightTrackIds = new Set(runtime.visualFrame.overlayTrackIds);
+  const relationTrackIds = new Set(runtime.visualFrame.relationTrackIds);
   const sourceObjects =
     mode === 'always'
       ? runtime.visualFrame.objects
-      : runtime.visualFrame.objects.filter((object) => object.trackId != null && highlightTrackIds.has(object.trackId));
+      : runtime.visualFrame.objects.filter(
+          (object) => object.trackId != null && (highlightTrackIds.has(object.trackId) || relationTrackIds.has(object.trackId))
+        );
 
   return sourceObjects.map((object) => ({
     object,
@@ -983,14 +990,14 @@ export interface IndustrialMonitorRuntime {
 }
 
 export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
-  const [wsUrl, setWsUrl] = useState(() => loadStoredWsUrl(''));
-  const [wsDraft, setWsDraft] = useState(() => loadStoredWsUrl(''));
-  const [sensorBridgeUrl, setSensorBridgeUrl] = useState(() => loadStoredSensorUrl(''));
-  const [sensorBridgeDraft, setSensorBridgeDraft] = useState(() => loadStoredSensorUrl(''));
-  const [rtspControlUrl, setRtspControlUrl] = useState(() => loadStoredRtspControlUrl(''));
-  const [rtspControlDraft, setRtspControlDraft] = useState(() => loadStoredRtspControlUrl(''));
-  const [rtspUrl, setRtspUrl] = useState(() => loadStoredRtspUrl(''));
-  const [rtspUrlDraft, setRtspUrlDraft] = useState(() => loadStoredRtspUrl(''));
+  const [wsUrl, setWsUrl] = useState(() => loadStoredWsUrl(DEFAULT_CCTV_WS_URL));
+  const [wsDraft, setWsDraft] = useState(() => loadStoredWsUrl(DEFAULT_CCTV_WS_URL));
+  const [sensorBridgeUrl, setSensorBridgeUrl] = useState(() => loadStoredSensorUrl(DEFAULT_SENSOR_BRIDGE_WS_URL));
+  const [sensorBridgeDraft, setSensorBridgeDraft] = useState(() => loadStoredSensorUrl(DEFAULT_SENSOR_BRIDGE_WS_URL));
+  const [rtspControlUrl, setRtspControlUrl] = useState(() => loadStoredRtspControlUrl(DEFAULT_RTSP_CONTROL_API_URL));
+  const [rtspControlDraft, setRtspControlDraft] = useState(() => loadStoredRtspControlUrl(DEFAULT_RTSP_CONTROL_API_URL));
+  const [rtspUrl, setRtspUrl] = useState(() => loadStoredRtspUrl(DEFAULT_RTSP_URL));
+  const [rtspUrlDraft, setRtspUrlDraft] = useState(() => loadStoredRtspUrl(DEFAULT_RTSP_URL));
   const [rtspPlaybackUrl, setRtspPlaybackUrl] = useState<string | null>(null);
   const [rtspStreamStatus, setRtspStreamStatus] = useState<RtspStreamStatus>('idle');
   const [rtspStreamMessage, setRtspStreamMessage] = useState<string | null>(null);
@@ -998,7 +1005,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [hiddenChannelIds, setHiddenChannelIds] = useState<number[]>([]);
   const [bboxVisible, setBboxVisible] = useState(() => loadStoredBboxVisible(true));
   const [overlayDisplayMode, setOverlayDisplayMode] = useState<OverlayDisplayMode>(() =>
-    loadStoredOverlayDisplayMode('always')
+    loadStoredOverlayDisplayMode('alert')
   );
   const [hazardPopupDebounceMode, setHazardPopupDebounceMode] = useState<HazardPopupDebounceMode>(() =>
     loadStoredHazardPopupDebounceMode('recent_three_frames_two_risks')

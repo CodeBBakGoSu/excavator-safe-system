@@ -9,6 +9,7 @@ describe('MonitorTile', () => {
         bboxVisible
         channel={{ id: 1, cameraKey: 'cam1', channel: 'CH-01', title: '굴착기 구역 A', sourceType: 'cctv' }}
         isFocused={false}
+        onHide={() => {}}
         onImageLoad={() => {}}
         onSelect={() => {}}
         overlayDisplayMode="always"
@@ -83,6 +84,7 @@ describe('MonitorTile', () => {
         bboxVisible
         channel={{ id: 1, cameraKey: 'cam1', channel: 'CH-01', title: '굴착기 구역 A', sourceType: 'cctv' }}
         isFocused={false}
+        onHide={vi.fn()}
         onImageLoad={vi.fn()}
         onSelect={vi.fn()}
         overlayDisplayMode="always"

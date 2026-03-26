@@ -407,6 +407,9 @@ describe('IndustrialCommandApp', () => {
     expect(within(pinnedFeed).getByText('경고: 작업자 접근 2')).toBeInTheDocument();
     expect(within(scrollFeed).getByText('경고: 작업자 접근 1')).toBeInTheDocument();
     expect(scrollFeed).toHaveClass('overflow-y-auto');
+    expect(scrollFeed).toHaveClass('min-h-0');
+    expect(scrollFeed.parentElement).toHaveClass('min-h-0');
+    expect(scrollFeed.closest('aside')).toHaveClass('overflow-hidden');
   });
 
   it('keeps tile focus separate from overlay actions and only renders intended detection overlays', () => {

@@ -8,7 +8,7 @@ const LOG_DIR_URL = new URL('../runtime-logs/', import.meta.url);
 const RTSP_FRAME_DIR_URL = new URL('../runtime-rtsp/', import.meta.url);
 const CONFIG_DIR_PATH = 'runtime-config';
 const TELEGRAM_SETTINGS_FILE_PATH = `${CONFIG_DIR_PATH}/telegram-settings.json`;
-const LIGHT_CONTROL_HOST = '192.168.1.7';
+const LIGHT_CONTROL_HOST = '192.168.10.7';
 const LIGHT_CONTROL_PORT = 8888;
 const AI_ALERT_LEVEL_PRIORITY = {
   INFO: 1,
