@@ -51,15 +51,23 @@ function getAlertSummary(runtime: ChannelRuntimeState) {
   );
 }
 
-function getTrackedObjects(runtime: ChannelRuntimeState) {
-  const highlightTrackIds = new Set(runtime.visualFrame.overlayTrackIds);
+function isRelationHighlighted(runtime: ChannelRuntimeState, object: DetectedObject) {
+  if (object.trackId == null) return false;
 
-  return runtime.visualFrame.objects
-    .filter((object) => object.trackId != null && highlightTrackIds.has(object.trackId))
-    .map((object) => ({
-      object,
-      highlighted: true,
-    }));
+  return object.label.toLowerCase() === 'person' && object.trackId === runtime.visualFrame.highlight?.personTrackId;
+}
+
+function getOverlayObjects(runtime: ChannelRuntimeState, mode: 'always' | 'alert' | 'risk') {
+  const highlightTrackIds = new Set(runtime.visualFrame.overlayTrackIds);
+  const sourceObjects = mode === 'always'
+    ? runtime.visualFrame.objects
+    : runtime.visualFrame.objects.filter((object) => object.trackId != null && highlightTrackIds.has(object.trackId));
+
+  return sourceObjects.map((object) => ({
+    object,
+    highlighted: object.trackId != null && highlightTrackIds.has(object.trackId),
+    relationHighlighted: isRelationHighlighted(runtime, object),
+  }));
 }
 
 function getOverlaySize(runtime: ChannelRuntimeState) {
@@ -85,7 +93,7 @@ export function MonitorTile({
   rtspStreamMessage,
 }: MonitorTileProps) {
   const alertSummary = getAlertSummary(runtime);
-  const trackedObjects = getTrackedObjects(runtime);
+  const overlayObjects = getOverlayObjects(runtime, overlayDisplayMode);
   const [overlayWidth, overlayHeight] = getOverlaySize(runtime);
   const connectionLabel = connectionLabelMap[runtime.connectionStatus];
   const isRtspTile = channel.sourceType === 'rtsp';
@@ -159,13 +167,14 @@ export function MonitorTile({
               preserveAspectRatio="none"
               viewBox={`0 0 ${overlayWidth} ${overlayHeight}`}
             >
-              {showBoxes ? trackedObjects.map(({ object, highlighted }) => (
+              {showBoxes ? overlayObjects.map(({ object, highlighted, relationHighlighted }) => (
                 <DetectionOverlay
                   highlighted={highlighted}
                   key={`${object.trackId ?? object.label}-${object.bbox.join('-')}`}
                   object={object}
                   overlayHeight={overlayHeight}
                   overlayWidth={overlayWidth}
+                  relationHighlighted={relationHighlighted}
                 />
               )) : null}
             </svg>
@@ -198,26 +207,30 @@ export function MonitorTile({
 function DetectionOverlay({
   object,
   highlighted,
+  relationHighlighted,
   overlayWidth,
   overlayHeight,
 }: {
   object: DetectedObject;
   highlighted: boolean;
+  relationHighlighted: boolean;
   overlayWidth: number;
   overlayHeight: number;
 }) {
   const [x1, y1, x2, y2] = normalizeBBoxForImage(object.bbox, [overlayWidth, overlayHeight]);
   const width = Math.max(0, x2 - x1);
   const height = Math.max(0, y2 - y1);
-  const tone = highlighted ? '#ffb4ab' : '#4b8eff';
-  const fill = highlighted ? 'rgba(255, 180, 171, 0.12)' : 'rgba(75, 142, 255, 0.12)';
+  const tone = relationHighlighted ? '#ff3b30' : highlighted ? '#ffb4ab' : '#4b8eff';
+  const fill = relationHighlighted ? 'rgba(255, 59, 48, 0.2)' : highlighted ? 'rgba(255, 180, 171, 0.12)' : 'rgba(75, 142, 255, 0.12)';
+  const labelFill = relationHighlighted ? '#ff3b30' : tone;
+  const labelText = relationHighlighted ? '#ffffff' : '#121416';
 
   return (
     <g>
       <rect fill={fill} height={height} rx="12" stroke={tone} strokeWidth="4" width={width} x={x1} y={y1} />
-      <rect fill={tone} height="32" rx="10" width="152" x={x1} y={Math.max(6, y1 - 38)} />
+      <rect fill={labelFill} height="32" rx="10" width="152" x={x1} y={Math.max(6, y1 - 38)} />
       <text
-        fill="#121416"
+        fill={labelText}
         fontFamily="var(--font-mono)"
         fontSize="16"
         fontWeight="700"

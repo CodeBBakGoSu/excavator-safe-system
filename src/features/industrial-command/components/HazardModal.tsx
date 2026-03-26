@@ -25,6 +25,11 @@ function shouldRenderBoxes(mode: 'always' | 'alert' | 'risk', alertTier: Channel
   return alertTier === 'risk';
 }
 
+function isRelationHighlighted(runtime: ChannelRuntimeState, trackId: number | null, label: string) {
+  if (trackId == null) return false;
+  return label.toLowerCase() === 'person' && trackId === runtime.latestFrame.highlight?.personTrackId;
+}
+
 export function HazardModal({
   open,
   channelLabel,
@@ -56,7 +61,7 @@ export function HazardModal({
 
   return (
     <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/75 px-4 py-6"
+      className={`fixed inset-0 z-30 flex items-center justify-center px-4 py-6 ${runtime.alertTier === 'risk' ? 'hazard-backdrop-flash' : 'bg-black/75'}`}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -65,22 +70,22 @@ export function HazardModal({
         aria-describedby={descriptionId}
         aria-labelledby={titleId}
         aria-modal="true"
-        className="ghost-border w-full max-w-6xl rounded-[32px] bg-surface p-5 shadow-xl sm:p-6"
+        className="hazard-modal-shell ghost-border w-full max-w-[min(96vw,1720px)] rounded-[36px] bg-surface px-6 py-6 shadow-2xl sm:px-8 sm:py-8"
         role="dialog"
       >
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-2">
-            <p className="text-sm text-secondary">HAZARD VIEWER</p>
-            <h2 className="text-balance text-2xl font-semibold text-on-surface" id={titleId}>
+          <div className="space-y-3">
+            <p className="text-base font-semibold tracking-[0.24em] text-error">HAZARD VIEWER</p>
+            <h2 className="text-balance text-3xl font-black tracking-tight text-on-surface sm:text-4xl" id={titleId}>
               위험 이벤트 상세
             </h2>
-            <p className="max-w-3xl text-pretty text-sm leading-6 text-on-surface-variant" id={descriptionId}>
+            <p className="max-w-4xl text-pretty text-base leading-7 text-on-surface-variant sm:text-lg" id={descriptionId}>
               선택된 채널의 최신 위험 프레임과 이벤트 요약을 확인합니다.
             </p>
           </div>
           <button
             aria-label="위험 보기 닫기"
-            className="rounded-2xl border border-outline/40 bg-surface-high px-4 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-highest focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            className="rounded-2xl border border-outline/40 bg-surface-high px-5 py-3 text-base font-semibold text-on-surface transition-colors hover:bg-surface-highest focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             onClick={onClose}
             type="button"
           >
@@ -88,18 +93,18 @@ export function HazardModal({
           </button>
         </div>
 
-        <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-          <div className="relative overflow-hidden rounded-[28px] border border-outline/30 bg-background">
-            <div className="flex items-center justify-between border-b border-outline/30 px-4 py-4">
+        <div className="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(380px,0.8fr)]">
+          <div className="relative overflow-hidden rounded-[32px] border border-outline/30 bg-background">
+            <div className="flex items-center justify-between border-b border-outline/30 px-5 py-5">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full border border-outline/40 bg-surface px-3 py-1 font-mono text-xs font-medium text-secondary">
+                <span className="rounded-full border border-outline/40 bg-surface px-4 py-1.5 font-mono text-sm font-semibold text-secondary">
                   {channelLabel}
                 </span>
-                <span className={`rounded-full border px-3 py-1 font-mono text-xs font-medium ${getToneClassName(runtime.alertTier)}`}>
+                <span className={`rounded-full border px-4 py-1.5 font-mono text-sm font-semibold ${getToneClassName(runtime.alertTier)}`}>
                   {runtime.alertTier === 'risk' ? 'RISK' : runtime.alertTier === 'caution' ? 'CAUTION' : 'NORMAL'}
                 </span>
               </div>
-              <span className="font-mono text-xs tabular-nums text-on-surface-variant">
+              <span className="font-mono text-sm tabular-nums text-on-surface-variant">
                 FRAME {frame.frameIndex ?? '--'}
               </span>
             </div>
@@ -123,9 +128,9 @@ export function HazardModal({
                         const [x1, y1, x2, y2] = normalizeBBoxForImage(object.bbox, [overlayWidth, overlayHeight]);
                         const width = Math.max(0, x2 - x1);
                         const height = Math.max(0, y2 - y1);
-                        const isClosestPerson = object.trackId != null && object.trackId === frame.highlight?.personTrackId;
-                        const stroke = isClosestPerson ? '#ff6b6b' : '#4b8eff';
-                        const fill = isClosestPerson ? 'rgba(255, 107, 107, 0.18)' : 'rgba(75, 142, 255, 0.12)';
+                        const relationHighlighted = isRelationHighlighted(runtime, object.trackId, object.label);
+                        const stroke = relationHighlighted ? '#ff3b30' : '#4b8eff';
+                        const fill = relationHighlighted ? 'rgba(255, 59, 48, 0.2)' : 'rgba(75, 142, 255, 0.12)';
 
                         return (
                           <g key={`${object.trackId ?? object.label}-${object.bbox.join('-')}`}>
@@ -147,28 +152,28 @@ export function HazardModal({
                   ) : null}
                 </>
               ) : (
-                <div className="flex h-full items-center justify-center px-6 text-center text-sm leading-6 text-on-surface-variant">
+                <div className="flex h-full items-center justify-center px-6 text-center text-base leading-7 text-on-surface-variant">
                   아직 수신된 위험 프레임이 없습니다.
                 </div>
               )}
-              <div className="absolute inset-x-4 bottom-4 rounded-2xl border border-black/10 bg-black/60 px-4 py-3 text-sm text-white">
-                <p className="font-medium">{summary || '위험 이벤트 요약 대기 중'}</p>
-                <p className="mt-1 text-white/80">{frame.combinedKo || '프레임 세부 요약이 수신되면 여기에 표시됩니다.'}</p>
+              <div className="absolute inset-x-5 bottom-5 rounded-[22px] border border-white/12 bg-black/72 px-5 py-4 text-white backdrop-blur-sm">
+                <p className="text-lg font-black leading-7 sm:text-xl">{summary || '위험 이벤트 요약 대기 중'}</p>
+                <p className="mt-2 text-base leading-7 text-white/88 sm:text-lg">{frame.combinedKo || '프레임 세부 요약이 수신되면 여기에 표시됩니다.'}</p>
               </div>
             </div>
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-4">
             <DetailCard label="감시 구역" value={frame.zoneName || channelTitle} />
             <DetailCard label="감지 대상" value={frame.detectedTargetLabel || '실제 감지 대상 데이터 대기 중'} />
             <DetailCard label="거리 추정" value={frame.estimatedDistanceText || '실제 거리 데이터 대기 중'} />
             <DetailCard label="이벤트 요약" value={summary || '실시간 이벤트 요약 대기 중'} />
-            <div className="rounded-[24px] border border-outline/30 bg-surface-high px-4 py-4">
-              <p className="text-sm text-secondary">감지 이벤트</p>
+            <div className="rounded-[28px] border border-outline/30 bg-surface-high px-5 py-5">
+              <p className="text-base font-semibold text-secondary">감지 이벤트</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {(frame.eventsKo.length > 0 ? frame.eventsKo : ['실시간 위험 이벤트 대기']).map((event, index) => (
                   <span
-                    className={`rounded-full border px-3 py-1 text-xs font-medium ${getToneClassName(runtime.alertTier)}`}
+                    className={`rounded-full border px-4 py-2 text-sm font-semibold ${getToneClassName(runtime.alertTier)}`}
                     key={`${event}-${index}`}
                   >
                     {event}
@@ -177,7 +182,7 @@ export function HazardModal({
               </div>
             </div>
             <button
-              className="w-full rounded-[24px] border border-primary bg-primary px-4 py-4 text-sm font-semibold text-on-primary transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              className="w-full rounded-[26px] border border-primary bg-primary px-5 py-4 text-base font-black text-on-primary transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               onClick={onClose}
               type="button"
             >
@@ -192,9 +197,9 @@ export function HazardModal({
 
 function DetailCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[24px] border border-outline/30 bg-surface-high px-4 py-4">
-      <p className="text-sm text-secondary">{label}</p>
-      <p className="mt-2 text-sm leading-6 text-on-surface">{value}</p>
+    <div className="rounded-[28px] border border-outline/30 bg-surface-high px-5 py-5">
+      <p className="text-base font-semibold text-secondary">{label}</p>
+      <p className="mt-2 text-base leading-7 text-on-surface sm:text-lg">{value}</p>
     </div>
   );
 }

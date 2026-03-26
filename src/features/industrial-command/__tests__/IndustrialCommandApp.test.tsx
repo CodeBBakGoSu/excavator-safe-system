@@ -237,7 +237,7 @@ describe('IndustrialCommandApp', () => {
 
     const firstTile = screen.getByRole('button', { name: 'CH-01 굴착기 구역 A' });
     expect(within(firstTile).getByText('PERSON #7')).toBeInTheDocument();
-    expect(within(firstTile).queryByText('MACHINERY #8')).not.toBeInTheDocument();
+    expect(within(firstTile).getByText('MACHINERY #8')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'CH-02 굴착기 구역 B' }));
 
