@@ -127,8 +127,9 @@ export function HazardModal({
           </button>
         </div>
 
-        <div className="mt-8 max-w-6xl mx-auto">
-          <div className="relative overflow-hidden rounded-[32px] border border-outline/30 bg-background">
+        <div className="mt-8 flex flex-col lg:flex-row items-stretch gap-6 max-w-[1600px] mx-auto">
+          {/* 비디오 컨테이너 */}
+          <div className="relative flex-1 overflow-hidden xl:min-w-[800px] rounded-[32px] border border-outline/30 bg-background max-w-6xl">
             <div className="flex items-center justify-between border-b border-outline/30 px-5 py-5">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-outline/40 bg-surface px-4 py-1.5 font-mono text-sm font-semibold text-secondary">
@@ -189,13 +190,36 @@ export function HazardModal({
                   아직 수신된 위험 프레임이 없습니다.
                 </div>
               )}
-              <div className="absolute top-5 left-1/2 -translate-x-1/2 w-fit max-w-[90%] rounded-[22px] border border-white/12 bg-black/72 px-6 py-4 text-center text-white backdrop-blur-sm">
-                <p className="text-lg font-black leading-7 sm:text-xl">{summary || '위험 이벤트 요약 대기 중'}</p>
-              </div>
             </div>
           </div>
 
-
+          {/* 텍스트 강조 우측 패널 */}
+          <div className={`flex w-full lg:w-[420px] shrink-0 flex-col justify-center rounded-[32px] border-2 p-8 shadow-2xl ${
+            runtime.alertTier === 'risk'
+              ? 'border-error bg-[#1a0505]'
+              : 'border-tertiary bg-tertiary/10'
+          }`}>
+            <div className={runtime.alertTier === 'risk' ? 'animate-pulse' : ''}>
+              <p className={`mb-4 text-sm font-bold tracking-[0.2em] uppercase ${
+                runtime.alertTier === 'risk' ? 'text-error' : 'text-tertiary'
+              }`}>
+                {runtime.alertTier === 'risk' ? '🚨 Immediate Hazard' : '⚠️ Caution'}
+              </p>
+              <p className="text-[2.5rem] sm:text-[2.75rem] font-black leading-[1.2] text-white break-keep" style={{ textShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+                {summary || '위험 이벤트 요약 대기 중'}
+              </p>
+            </div>
+            
+            {runtime.alertTier === 'risk' && (
+              <div className="mt-10 flex items-center justify-center gap-3 rounded-[16px] bg-error/20 py-4 text-error border border-error/30">
+                <span className="relative flex h-5 w-5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-error opacity-75"></span>
+                  <span className="relative inline-flex h-5 w-5 rounded-full bg-error"></span>
+                </span>
+                <span className="text-lg font-bold tracking-widest">주의 요망</span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
