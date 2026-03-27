@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sensor:bridge": "node sensor-bridge/server.js"
+    "sensor:bridge": "node sensor-bridge/server.js",
+    "sensor:check-connectivity": "node sensor-bridge/check-connectivity.js"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
