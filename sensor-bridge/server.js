@@ -447,11 +447,15 @@ export function createLightControlBridge({
           settle(reject, error);
         });
         socket.once?.('connect', () => {
+          logger.info(`light control tcp connected to ${host}:${port}`);
           socket.write(JSON.stringify(validatedPayload), (error) => {
             if (error) {
               settle(reject, error);
               return;
             }
+            logger.info(
+              `light control tcp payload sent (${Buffer.byteLength(JSON.stringify(validatedPayload))} bytes)`
+            );
             socket.end();
             settle(resolve);
           });

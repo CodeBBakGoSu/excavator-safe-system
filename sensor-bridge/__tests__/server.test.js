@@ -193,9 +193,10 @@ describe('createLightControlBridge', () => {
       end,
     };
     const createConnection = vi.fn(() => socket);
+    const logger = { error: vi.fn(), info: vi.fn() };
     const bridge = createLightControlBridge({
       createConnection,
-      logger: { error: vi.fn(), info: vi.fn() },
+      logger,
     });
 
     await bridge.relay({
@@ -213,6 +214,10 @@ describe('createLightControlBridge', () => {
       }),
     ]);
     expect(end).toHaveBeenCalledOnce();
+    expect(logger.info).toHaveBeenCalledWith('light control tcp connected to 192.168.10.7:8888');
+    expect(logger.info).toHaveBeenCalledWith(
+      'light control tcp payload sent (79 bytes)'
+    );
   });
 
   it('deduplicates repeated commands but still forwards state changes immediately', async () => {
@@ -260,9 +265,10 @@ describe('createLightControlBridge', () => {
 
   it('rejects invalid control payloads without opening a tcp socket', async () => {
     const createConnection = vi.fn();
+    const logger = { error: vi.fn(), info: vi.fn() };
     const bridge = createLightControlBridge({
       createConnection,
-      logger: { error: vi.fn(), info: vi.fn() },
+      logger,
     });
 
     await expect(
@@ -274,6 +280,7 @@ describe('createLightControlBridge', () => {
     ).rejects.toThrow(/light_control/);
 
     expect(createConnection).not.toHaveBeenCalled();
+    expect(logger.info).not.toHaveBeenCalled();
   });
 });
 
