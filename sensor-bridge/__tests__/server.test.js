@@ -137,9 +137,15 @@ describe('createLogRequestHandler', () => {
 describe('createSensorBridgeServer', () => {
   it('starts an http bridge server for relay and control apis', () => {
     const httpServer = { listen: vi.fn(), close: vi.fn() };
+    const sensorRelayWebSocketServer = { close: vi.fn() };
+    const attachSensorRelayWebSocketServer = vi.fn(() => sensorRelayWebSocketServer);
+    const tcpMonitor = { start: vi.fn(), close: vi.fn() };
+    const createTcpConnectionMonitor = vi.fn(() => tcpMonitor);
 
     const server = createSensorBridgeServer({
       createHttpServer: () => httpServer,
+      attachSensorRelayWebSocketServer,
+      createTcpConnectionMonitor,
       createTelegramSettingsStore: () => createTelegramSettingsStoreMock(),
       logger: { info: vi.fn(), error: vi.fn() },
     });
@@ -149,14 +155,26 @@ describe('createSensorBridgeServer', () => {
     });
 
     expect(httpServer.listen).toHaveBeenCalledWith(8787, '0.0.0.0', expect.any(Function));
+    expect(attachSensorRelayWebSocketServer).toHaveBeenCalledWith({
+      httpServer,
+      logger: expect.any(Object),
+    });
+    expect(createTcpConnectionMonitor).toHaveBeenCalledWith({
+      logger: expect.any(Object),
+    });
+    expect(tcpMonitor.start).toHaveBeenCalledOnce();
   });
 
   it('stops the http bridge server cleanly', () => {
     const httpServer = { listen: vi.fn(), close: vi.fn() };
     const rtspManager = { stop: vi.fn() };
+    const sensorRelayWebSocketServer = { close: vi.fn() };
+    const tcpMonitor = { start: vi.fn(), close: vi.fn() };
 
     const server = createSensorBridgeServer({
       createHttpServer: () => httpServer,
+      attachSensorRelayWebSocketServer: () => sensorRelayWebSocketServer,
+      createTcpConnectionMonitor: () => tcpMonitor,
       createRtspStreamManager: () => rtspManager,
       createTelegramSettingsStore: () => createTelegramSettingsStoreMock(),
       logger: { info: vi.fn(), error: vi.fn() },
@@ -168,6 +186,8 @@ describe('createSensorBridgeServer', () => {
     server.stop();
 
     expect(rtspManager.stop).toHaveBeenCalledOnce();
+    expect(sensorRelayWebSocketServer.close).toHaveBeenCalledOnce();
+    expect(tcpMonitor.close).toHaveBeenCalledOnce();
     expect(httpServer.close).toHaveBeenCalledOnce();
   });
 });

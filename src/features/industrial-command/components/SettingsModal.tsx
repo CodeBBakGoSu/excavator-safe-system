@@ -18,7 +18,6 @@ interface SettingsModalProps {
   open: boolean;
   wsDraft: string;
   sensorBridgeDraft: string;
-  sensorInputDraft: string;
   rtspControlDraft: string;
   rtspUrlDraft: string;
   rtspStreamStatus: 'idle' | 'starting' | 'running' | 'stopped' | 'failed';
@@ -48,7 +47,6 @@ interface SettingsModalProps {
   onClose: () => void;
   updateWsDraft: (value: string) => void;
   updateSensorBridgeDraft: (value: string) => void;
-  updateSensorInputDraft: (value: string) => void;
   updateRtspControlDraft: (value: string) => void;
   updateRtspUrlDraft: (value: string) => void;
   updateCameraDisplayCount: (value: 2 | 4) => void;
@@ -63,7 +61,6 @@ interface SettingsModalProps {
   setSensorPopupDurationMs: (value: number) => void;
   applyWsUrl: () => void;
   applySensorBridgeUrl: () => void;
-  applySensorInputUrl: () => void;
   applyRtspControlUrl: () => void;
   applyRtspUrl: () => void;
   startRtspStream: () => Promise<void>;
@@ -76,7 +73,6 @@ export function SettingsModal({
   open,
   wsDraft,
   sensorBridgeDraft,
-  sensorInputDraft,
   rtspControlDraft,
   rtspUrlDraft,
   rtspStreamStatus,
@@ -101,7 +97,6 @@ export function SettingsModal({
   onClose,
   updateWsDraft,
   updateSensorBridgeDraft,
-  updateSensorInputDraft,
   updateRtspControlDraft,
   updateRtspUrlDraft,
   updateCameraDisplayCount,
@@ -116,7 +111,6 @@ export function SettingsModal({
   setSensorPopupDurationMs,
   applyWsUrl,
   applySensorBridgeUrl,
-  applySensorInputUrl,
   applyRtspControlUrl,
   applyRtspUrl,
   startRtspStream,
@@ -180,7 +174,7 @@ export function SettingsModal({
               설정
             </h2>
             <p className="max-w-2xl text-pretty text-sm leading-6 text-on-surface-variant" id={descriptionId}>
-              저장된 CCTV, 센서 브리지, 센서 입력 주소를 관리하고, 위험 팝업과 현장 상태 팝업 유지 시간을 조정합니다.
+              저장된 CCTV와 센서 브리지 주소를 관리하고, 위험 팝업과 현장 상태 팝업 유지 시간을 조정합니다.
             </p>
           </div>
           <button
@@ -198,7 +192,7 @@ export function SettingsModal({
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-on-surface">
               <span>
                 기본 연결
-                <span className="ml-2 font-normal text-on-surface-variant">CCTV, 센서 브리지, 센서 입력, RTSP 주소</span>
+                <span className="ml-2 font-normal text-on-surface-variant">CCTV, 센서 브리지, RTSP 주소</span>
               </span>
               <span className="text-xs font-medium text-on-surface-variant">접기/펼치기</span>
             </summary>
@@ -224,18 +218,6 @@ export function SettingsModal({
                   spellCheck={false}
                   type="text"
                   value={sensorBridgeDraft}
-                />
-              </label>
-
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-on-surface">Sensor Input WebSocket URL</span>
-                <input
-                  className="w-full rounded-2xl border border-outline/40 bg-background px-4 py-3 text-sm text-on-surface outline-none transition-colors placeholder:text-secondary focus:border-primary focus:ring-2 focus:ring-primary/30"
-                  onChange={(event) => updateSensorInputDraft(event.target.value)}
-                  placeholder="ws://192.168.10.7:10000"
-                  spellCheck={false}
-                  type="text"
-                  value={sensorInputDraft}
                 />
               </label>
 
@@ -532,7 +514,6 @@ export function SettingsModal({
               onClick={() => {
                 applyWsUrl();
                 applySensorBridgeUrl();
-                applySensorInputUrl();
                 applyRtspControlUrl();
                 applyRtspUrl();
               }}

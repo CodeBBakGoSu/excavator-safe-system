@@ -6,6 +6,7 @@ import {
   getBridgeApiUrl,
   getBridgeHttpBase,
   getLightControlWsUrl,
+  getSensorRelayWsUrl,
   type HazardRiskSample,
   type HazardPopupDebounceMode,
   getRtspApiBase,
@@ -151,6 +152,18 @@ describe('getLightControlWsUrl', () => {
 
   it('preserves secure protocol when the bridge api is https', () => {
     expect(getLightControlWsUrl('https://bridge.example.com')).toBe('wss://bridge.example.com/ws/light-control');
+  });
+});
+
+describe('getSensorRelayWsUrl', () => {
+  it('derives the backend relay path from a bridge websocket base url', () => {
+    expect(getSensorRelayWsUrl('ws://10.161.110.223:8787')).toBe('ws://10.161.110.223:8787/ws/sensor-bridge');
+  });
+
+  it('keeps an explicit websocket path when one is already provided', () => {
+    expect(getSensorRelayWsUrl('ws://bridge.example.com/custom-sensor-path')).toBe(
+      'ws://bridge.example.com/custom-sensor-path'
+    );
   });
 });
 

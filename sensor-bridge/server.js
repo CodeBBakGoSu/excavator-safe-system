@@ -2,14 +2,18 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
 const LOG_DIR_URL = new URL('../runtime-logs/', import.meta.url);
 const RTSP_FRAME_DIR_URL = new URL('../runtime-rtsp/', import.meta.url);
 const CONFIG_DIR_PATH = 'runtime-config';
 const TELEGRAM_SETTINGS_FILE_PATH = `${CONFIG_DIR_PATH}/telegram-settings.json`;
+const SENSOR_SOURCE_WS_URL = 'ws://192.168.10.7:10000';
 const LIGHT_CONTROL_HOST = '192.168.10.7';
 const LIGHT_CONTROL_PORT = 8888;
+const SENSOR_RELAY_RECONNECT_MS = 3000;
+const LIGHT_CONTROL_TCP_MONITOR_INTERVAL_MS = 3000;
+const LIGHT_CONTROL_TCP_MONITOR_TIMEOUT_MS = 2000;
 const AI_ALERT_LEVEL_PRIORITY = {
   INFO: 1,
   SAFE: 1,
@@ -488,7 +492,6 @@ export function attachLightControlWebSocketServer({
   httpServer.on?.('upgrade', (request, socket, head) => {
     const requestUrl = new URL(request.url || '/', 'http://localhost');
     if (requestUrl.pathname !== path) {
-      socket.destroy();
       return;
     }
 
@@ -525,6 +528,187 @@ export function attachLightControlWebSocketServer({
   return {
     close() {
       webSocketServer.close();
+    },
+  };
+}
+
+export function attachSensorRelayWebSocketServer({
+  httpServer,
+  logger = console,
+  path = '/ws/sensor-bridge',
+  upstreamUrl = SENSOR_SOURCE_WS_URL,
+  reconnectIntervalMs = SENSOR_RELAY_RECONNECT_MS,
+  createWebSocketServer = (options) => new WebSocketServer(options),
+  createUpstreamWebSocket = (url) => new WebSocket(url),
+} = {}) {
+  if (!httpServer) {
+    return { close() {} };
+  }
+
+  const webSocketServer = createWebSocketServer({ noServer: true });
+  const clients = new Set();
+  let upstream = null;
+  let reconnectTimer = null;
+  let closed = false;
+
+  const clearReconnectTimer = () => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const closeUpstream = () => {
+    if (!upstream) return;
+    const activeUpstream = upstream;
+    upstream = null;
+    activeUpstream.close?.();
+  };
+
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connectUpstream();
+    }, reconnectIntervalMs);
+  };
+
+  const broadcast = (raw) => {
+    const payload = typeof raw === 'string' ? raw : String(raw);
+    for (const client of clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(payload);
+      }
+    }
+  };
+
+  const connectUpstream = () => {
+    if (closed || upstream) return;
+
+    logger.info(`sensor relay upstream connecting to ${upstreamUrl}`);
+    const nextUpstream = createUpstreamWebSocket(upstreamUrl);
+    upstream = nextUpstream;
+
+    nextUpstream.on?.('open', () => {
+      logger.info(`sensor relay upstream connected to ${upstreamUrl}`);
+    });
+
+    nextUpstream.on?.('message', (raw) => {
+      logger.info(`sensor relay upstream message received (${String(raw).length} bytes)`);
+      broadcast(raw);
+    });
+
+    nextUpstream.on?.('error', (error) => {
+      logger.error('sensor relay upstream failed', error);
+    });
+
+    nextUpstream.on?.('close', () => {
+      logger.info(`sensor relay upstream disconnected from ${upstreamUrl}`);
+      if (upstream === nextUpstream) {
+        upstream = null;
+      }
+      scheduleReconnect();
+    });
+  };
+
+  httpServer.on?.('upgrade', (request, socket, head) => {
+    const requestUrl = new URL(request.url || '/', 'http://localhost');
+    if (requestUrl.pathname !== path) {
+      return;
+    }
+
+    webSocketServer.handleUpgrade(request, socket, head, (client) => {
+      webSocketServer.emit('connection', client, request);
+    });
+  });
+
+  webSocketServer.on('connection', (client) => {
+    const remoteAddress = client._socket?.remoteAddress || 'unknown';
+    clients.add(client);
+    logger.info(`sensor relay websocket connected from ${remoteAddress}`);
+
+    client.on('close', () => {
+      clients.delete(client);
+      logger.info(`sensor relay websocket disconnected from ${remoteAddress}`);
+    });
+  });
+
+  logger.info(`sensor relay upstream target configured: ${upstreamUrl}`);
+  connectUpstream();
+
+  return {
+    close() {
+      closed = true;
+      clearReconnectTimer();
+      closeUpstream();
+      webSocketServer.close();
+    },
+  };
+}
+
+export function createTcpConnectionMonitor({
+  host = LIGHT_CONTROL_HOST,
+  port = LIGHT_CONTROL_PORT,
+  intervalMs = LIGHT_CONTROL_TCP_MONITOR_INTERVAL_MS,
+  timeoutMs = LIGHT_CONTROL_TCP_MONITOR_TIMEOUT_MS,
+  createConnection = net.createConnection,
+  logger = console,
+} = {}) {
+  let intervalId = null;
+  let inFlight = false;
+  let lastStatus = 'unknown';
+  let closed = false;
+
+  const setStatus = (nextStatus, detail) => {
+    if (lastStatus === nextStatus) {
+      return;
+    }
+    lastStatus = nextStatus;
+    logger.info(`light control tcp status: ${nextStatus}${detail ? ` (${detail})` : ''}`);
+  };
+
+  const probe = () => {
+    if (closed || inFlight) return;
+    inFlight = true;
+
+    const socket = createConnection({ host, port });
+    let settled = false;
+
+    const settle = (status, detail) => {
+      if (settled) return;
+      settled = true;
+      inFlight = false;
+      setStatus(status, detail);
+      socket.destroy?.();
+    };
+
+    socket.setTimeout?.(timeoutMs);
+    socket.once?.('connect', () => settle('connected', `${host}:${port}`));
+    socket.once?.('timeout', () => settle('timeout', `${host}:${port}`));
+    socket.once?.('error', (error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      settle('disconnected', detail);
+    });
+    socket.once?.('close', () => {
+      if (!settled) {
+        settle('disconnected', `${host}:${port} closed`);
+      }
+    });
+  };
+
+  logger.info(`light control tcp monitor target configured: ${host}:${port}`);
+
+  return {
+    start() {
+      probe();
+      intervalId = setInterval(probe, intervalMs);
+    },
+    close() {
+      closed = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
     },
   };
 }
@@ -1226,6 +1410,8 @@ export function createSensorBridgeServer({
   createHttpServer = (handler) => http.createServer(handler),
   createLightControlBridge: createLightControlBridgeImpl = createLightControlBridge,
   attachLightControlWebSocketServer: attachLightControlWebSocketServerImpl = attachLightControlWebSocketServer,
+  attachSensorRelayWebSocketServer: attachSensorRelayWebSocketServerImpl = attachSensorRelayWebSocketServer,
+  createTcpConnectionMonitor: createTcpConnectionMonitorImpl = createTcpConnectionMonitor,
   createTelegramAlertSender: createTelegramAlertSenderImpl = createTelegramAlertSender,
   createTelegramChatRegistry: createTelegramChatRegistryImpl = createTelegramChatRegistry,
   createTelegramSettingsStore: createTelegramSettingsStoreImpl = createTelegramSettingsStore,
@@ -1234,6 +1420,8 @@ export function createSensorBridgeServer({
 } = {}) {
   let httpServer = null;
   let lightControlWebSocketServer = null;
+  let sensorRelayWebSocketServer = null;
+  let lightControlTcpMonitor = null;
   let lightControlBridge = null;
   let rtspManager = null;
   let lastSensorAlertAt = 0;
@@ -1355,10 +1543,17 @@ export function createSensorBridgeServer({
         lightControlBridge,
         logger,
       });
+      sensorRelayWebSocketServer = attachSensorRelayWebSocketServerImpl({
+        httpServer,
+        logger,
+      });
+      lightControlTcpMonitor = createTcpConnectionMonitorImpl({ logger });
+      lightControlTcpMonitor.start?.();
       httpServer.listen?.(wsPort, '0.0.0.0', () => {
         logger.info(`sensor bridge api listening on http://0.0.0.0:${wsPort}`);
         logger.info(`sensor bridge log api listening on http://0.0.0.0:${wsPort}/logs`);
         logger.info(`rtsp control api listening on http://0.0.0.0:${wsPort}/rtsp/status`);
+        logger.info(`sensor relay websocket listening on ws://0.0.0.0:${wsPort}/ws/sensor-bridge`);
         logger.info(`light control websocket listening on ws://0.0.0.0:${wsPort}/ws/light-control`);
         logger.info(`telegram sensor relay api listening on http://0.0.0.0:${wsPort}/telegram/alerts/sensor`);
         logger.info(`telegram cctv relay api listening on http://0.0.0.0:${wsPort}/telegram/alerts/cctv`);
@@ -1368,6 +1563,8 @@ export function createSensorBridgeServer({
     stop() {
       rtspManager?.stop?.();
       lightControlWebSocketServer?.close?.();
+      sensorRelayWebSocketServer?.close?.();
+      lightControlTcpMonitor?.close?.();
       httpServer?.close();
     },
   };

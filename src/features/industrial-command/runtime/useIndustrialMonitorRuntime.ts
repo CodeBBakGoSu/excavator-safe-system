@@ -23,7 +23,6 @@ const MAX_STREAM_LOGS = 200;
 const MAX_EVENT_FEED_ITEMS = 60;
 const WS_STORAGE_KEY = 'excavator-safe-system:cctv-poc-ws-url';
 const SENSOR_WS_STORAGE_KEY = 'excavator-safe-system:sensor-bridge-ws-url';
-const SENSOR_INPUT_WS_STORAGE_KEY = 'excavator-safe-system:sensor-input-ws-url';
 const RTSP_CONTROL_API_STORAGE_KEY = 'excavator-safe-system:rtsp-control-api-url';
 const RTSP_URL_STORAGE_KEY = 'excavator-safe-system:rtsp-hls-url';
 const TELEGRAM_BOT_TOKEN_STORAGE_KEY = 'excavator-safe-system:telegram-bot-token';
@@ -40,7 +39,6 @@ const HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY = 'excavator-safe-system:hazard-pop
 const HAZARD_QUALIFICATION_WINDOW_MS = 1500;
 const DEFAULT_CCTV_WS_URL = 'ws://10.161.110.223:8876';
 const DEFAULT_SENSOR_BRIDGE_WS_URL = 'ws://10.161.110.223:8787';
-const DEFAULT_SENSOR_INPUT_WS_URL = 'ws://192.168.10.7:10000';
 const DEFAULT_RTSP_CONTROL_API_URL = 'http://10.161.110.223:8787';
 const DEFAULT_RTSP_URL = 'rtsp://admin:total!23@192.168.1.100:554';
 const DEFAULT_TELEGRAM_BOT_TOKEN = '8385397257:AAFS3n_zuXKfHW0K0lP2uk4rxz7pWb3AIVk';
@@ -293,6 +291,16 @@ export function getLightControlWsUrl(rtspControlApiBase: string) {
   const base = new URL(rtspControlApiBase);
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
   base.pathname = '/ws/light-control';
+  base.search = '';
+  base.hash = '';
+  return base.toString();
+}
+
+export function getSensorRelayWsUrl(sensorBridgeUrl: string) {
+  const base = new URL(sensorBridgeUrl);
+  if (base.pathname === '/' || base.pathname === '') {
+    base.pathname = '/ws/sensor-bridge';
+  }
   base.search = '';
   base.hash = '';
   return base.toString();
@@ -906,8 +914,6 @@ export interface IndustrialMonitorRuntime {
   wsDraft: string;
   sensorBridgeUrl: string;
   sensorBridgeDraft: string;
-  sensorInputUrl: string;
-  sensorInputDraft: string;
   rtspControlUrl: string;
   rtspControlDraft: string;
   rtspUrl: string;
@@ -956,7 +962,6 @@ export interface IndustrialMonitorRuntime {
   savingLogType: LogStreamType | null;
   updateWsDraft: (value: string) => void;
   updateSensorBridgeDraft: (value: string) => void;
-  updateSensorInputDraft: (value: string) => void;
   updateRtspControlDraft: (value: string) => void;
   updateRtspUrlDraft: (value: string) => void;
   updateCameraDisplayCount: (value: CameraDisplayCount) => void;
@@ -976,7 +981,6 @@ export interface IndustrialMonitorRuntime {
   disconnectSensorSocket: () => void;
   applyWsUrl: () => void;
   applySensorBridgeUrl: () => void;
-  applySensorInputUrl: () => void;
   applyRtspControlUrl: () => void;
   applyRtspUrl: () => void;
   startRtspStream: () => Promise<void>;
@@ -1000,8 +1004,6 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [wsDraft, setWsDraft] = useState(() => loadStoredWsUrl(DEFAULT_CCTV_WS_URL));
   const [sensorBridgeUrl, setSensorBridgeUrl] = useState(() => loadStoredSensorUrl(DEFAULT_SENSOR_BRIDGE_WS_URL));
   const [sensorBridgeDraft, setSensorBridgeDraft] = useState(() => loadStoredSensorUrl(DEFAULT_SENSOR_BRIDGE_WS_URL));
-  const [sensorInputUrl, setSensorInputUrl] = useState(() => loadStoredSensorUrl(DEFAULT_SENSOR_INPUT_WS_URL));
-  const [sensorInputDraft, setSensorInputDraft] = useState(() => loadStoredSensorUrl(DEFAULT_SENSOR_INPUT_WS_URL));
   const [rtspControlUrl, setRtspControlUrl] = useState(() => loadStoredRtspControlUrl(DEFAULT_RTSP_CONTROL_API_URL));
   const [rtspControlDraft, setRtspControlDraft] = useState(() => loadStoredRtspControlUrl(DEFAULT_RTSP_CONTROL_API_URL));
   const [rtspUrl, setRtspUrl] = useState(() => loadStoredRtspUrl(DEFAULT_RTSP_URL));
@@ -1800,15 +1802,16 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       setSensorConnectionStatus(mode === 'manual' ? 'connecting' : 'reconnecting');
       setSensorSettingsMessage(null);
 
-      const ws = new WebSocket(targetUrl);
+      const relayUrl = getSensorRelayWsUrl(targetUrl);
+      const ws = new WebSocket(relayUrl);
       sensorWsRef.current = ws;
-      appendSensorLog('센서 브리지 연결 시작', `대상 주소: ${targetUrl}`);
+      appendSensorLog('센서 브리지 연결 시작', `대상 주소: ${relayUrl}`);
 
       ws.onopen = () => {
         sensorReconnectAttemptRef.current = 0;
         setSensorReconnectAttempt(0);
         setSensorConnectionStatus('connected');
-        appendSensorLog('센서 브리지 연결 성공', `연결 주소: ${targetUrl}`);
+        appendSensorLog('센서 브리지 연결 성공', `연결 주소: ${relayUrl}`);
       };
 
       ws.onmessage = (event) => {
@@ -1870,7 +1873,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         if (sensorWsRef.current === ws) {
           sensorWsRef.current = null;
         }
-        appendSensorLog('센서 브리지 종료', `연결 종료: ${targetUrl}`);
+        appendSensorLog('센서 브리지 종료', `연결 종료: ${relayUrl}`);
         if (!mountedRef.current) return;
         if (manualCloseSensorSocketsRef.current.has(ws)) {
           manualCloseSensorSocketsRef.current.delete(ws);
@@ -1960,11 +1963,6 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
 
   const updateSensorBridgeDraft = useCallback((value: string) => {
     setSensorBridgeDraft(value);
-    setSensorSettingsMessage(null);
-  }, []);
-
-  const updateSensorInputDraft = useCallback((value: string) => {
-    setSensorInputDraft(value);
     setSensorSettingsMessage(null);
   }, []);
 
@@ -2084,26 +2082,11 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(SENSOR_WS_STORAGE_KEY, nextUrl);
     }
+    disconnectSensorSocket();
     setSensorBridgeUrl(nextUrl);
     setSensorSettingsMessage('센서 브리지 주소를 저장했습니다.');
-  }, [sensorBridgeDraft]);
-
-  const applySensorInputUrl = useCallback(() => {
-    const error = validateSocketUrl(sensorInputDraft);
-    if (error) {
-      setSensorSettingsMessage(error);
-      return;
-    }
-
-    const nextUrl = sensorInputDraft.trim();
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(SENSOR_INPUT_WS_STORAGE_KEY, nextUrl);
-    }
-    disconnectSensorSocket();
-    setSensorInputUrl(nextUrl);
-    setSensorSettingsMessage('센서 입력 WebSocket 주소를 저장했습니다.');
     window.setTimeout(() => connectSensorSocket(nextUrl), 0);
-  }, [connectSensorSocket, disconnectSensorSocket, sensorInputDraft]);
+  }, [connectSensorSocket, disconnectSensorSocket, sensorBridgeDraft]);
 
   const applyRtspUrl = useCallback(() => {
     const nextUrl = rtspUrlDraft.trim();
@@ -2330,8 +2313,6 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     wsDraft,
     sensorBridgeUrl,
     sensorBridgeDraft,
-    sensorInputUrl,
-    sensorInputDraft,
     rtspControlUrl: rtspControlApiBase,
     rtspControlDraft,
     rtspUrl,
@@ -2380,7 +2361,6 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     savingLogType,
     updateWsDraft,
     updateSensorBridgeDraft,
-    updateSensorInputDraft,
     updateRtspControlDraft,
     updateRtspUrlDraft,
     updateCameraDisplayCount,
@@ -2400,7 +2380,6 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     disconnectSensorSocket,
     applyWsUrl,
     applySensorBridgeUrl,
-    applySensorInputUrl,
     applyRtspControlUrl,
     applyRtspUrl,
     startRtspStream,

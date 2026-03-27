@@ -87,13 +87,13 @@ function emitCctvFrame(
 
 function emitLiveData({
   cctvUrl = 'ws://localhost:9999/frames',
-  sensorUrl = 'ws://192.168.10.7:10000',
+  sensorUrl = 'ws://localhost:8787',
 }: {
   cctvUrl?: string;
   sensorUrl?: string;
 } = {}) {
   window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', cctvUrl);
-  window.localStorage.setItem('excavator-safe-system:sensor-input-ws-url', sensorUrl);
+  window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', sensorUrl);
   window.localStorage.setItem('excavator-safe-system:telegram-bot-token', '8385397257:AAFS3n_zuXKfHW0K0lP2uk4rxz7pWb3AIVk');
   window.localStorage.setItem('excavator-safe-system:telegram-chat-ids', JSON.stringify(['8477727287']));
   window.localStorage.setItem(
@@ -106,7 +106,7 @@ function emitLiveData({
   fireEvent.click(screen.getByRole('button', { name: '카메라 연결' }));
   fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
 
-  expect(MockWebSocket.instances.map((socket) => socket.url)).toEqual([cctvUrl, sensorUrl]);
+  expect(MockWebSocket.instances.map((socket) => socket.url)).toEqual([cctvUrl, `${sensorUrl}/ws/sensor-bridge`]);
 
   act(() => {
     MockWebSocket.instances[0].emitOpen();
@@ -452,7 +452,7 @@ describe('IndustrialCommandApp', () => {
 
   it('auto-opens only the hazard overlay from runtime events and keeps field state manual-only', () => {
     window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');
-    window.localStorage.setItem('excavator-safe-system:sensor-input-ws-url', 'ws://192.168.10.7:10000');
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://localhost:8787');
     window.localStorage.setItem('excavator-safe-system:hazard-popup-duration-ms', '120');
     window.localStorage.setItem('excavator-safe-system:field-state-popup-duration-ms', '180');
 
@@ -528,7 +528,7 @@ describe('IndustrialCommandApp', () => {
   });
 
   it('relays only unapproved external sensor snapshots to telegram', async () => {
-    window.localStorage.setItem('excavator-safe-system:sensor-input-ws-url', 'ws://192.168.1.7:10000');
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://192.168.1.7:8787');
     window.localStorage.setItem('excavator-safe-system:telegram-bot-token', '8385397257:AAFS3n_zuXKfHW0K0lP2uk4rxz7pWb3AIVk');
     window.localStorage.setItem('excavator-safe-system:telegram-chat-ids', JSON.stringify(['8477727287']));
 
@@ -581,7 +581,7 @@ describe('IndustrialCommandApp', () => {
   });
 
   it('does not relay approved sensor warnings to telegram', async () => {
-    window.localStorage.setItem('excavator-safe-system:sensor-input-ws-url', 'ws://192.168.1.7:10000');
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://192.168.1.7:8787');
     window.localStorage.setItem('excavator-safe-system:telegram-bot-token', '8385397257:AAFS3n_zuXKfHW0K0lP2uk4rxz7pWb3AIVk');
     window.localStorage.setItem('excavator-safe-system:telegram-chat-ids', JSON.stringify(['8477727287']));
 
@@ -803,12 +803,9 @@ describe('IndustrialCommandApp', () => {
     fireEvent.change(screen.getByLabelText('Sensor Bridge WebSocket URL'), {
       target: { value: 'ws://localhost:8787' },
     });
-    fireEvent.change(screen.getByLabelText('Sensor Input WebSocket URL'), {
-      target: { value: 'ws://192.168.10.7:10000' },
-    });
     fireEvent.click(screen.getByRole('button', { name: '기본 연결 적용' }));
 
-    expect(screen.getByText('센서 입력 WebSocket 주소를 저장했습니다.')).toBeInTheDocument();
+    expect(screen.getByText('센서 브리지 주소를 저장했습니다.')).toBeInTheDocument();
 
     act(() => {
       vi.runOnlyPendingTimers();
@@ -819,7 +816,7 @@ describe('IndustrialCommandApp', () => {
 
     const emptyFieldStateDialog = screen.getByRole('dialog', { name: '현장 상태 스냅샷' });
     expect(within(emptyFieldStateDialog).getByText('아직 수신된 현장 상태 스냅샷이 없습니다.')).toBeInTheDocument();
-    expect(within(emptyFieldStateDialog).queryByText('센서 입력 WebSocket 주소를 저장했습니다.')).not.toBeInTheDocument();
+    expect(within(emptyFieldStateDialog).queryByText('센서 브리지 주소를 저장했습니다.')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '현장 상태 닫기' }));
 
@@ -859,14 +856,14 @@ describe('IndustrialCommandApp', () => {
 
     const populatedFieldStateDialog = screen.getByRole('dialog', { name: '현장 상태 스냅샷' });
     expect(within(populatedFieldStateDialog).getAllByText('worker_11')).toHaveLength(2);
-    expect(within(populatedFieldStateDialog).queryByText('센서 입력 WebSocket 주소를 저장했습니다.')).not.toBeInTheDocument();
+    expect(within(populatedFieldStateDialog).queryByText('센서 브리지 주소를 저장했습니다.')).not.toBeInTheDocument();
     expect(within(populatedFieldStateDialog).queryByText('아직 수신된 현장 상태 스냅샷이 없습니다.')).not.toBeInTheDocument();
   });
 
   it('opens a sensor emergency popup on a random recent CH-01/CH-02 frame and keeps its bbox overlay', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.75);
     window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');
-    window.localStorage.setItem('excavator-safe-system:sensor-input-ws-url', 'ws://192.168.10.7:10000');
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://localhost:8787');
     window.localStorage.setItem('excavator-safe-system:hazard-popup-duration-ms', '5000');
 
     render(<App />);
