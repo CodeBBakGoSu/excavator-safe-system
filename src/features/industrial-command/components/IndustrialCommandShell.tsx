@@ -70,7 +70,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
             if (runtime.wsUrl) runtime.connectSocket(runtime.wsUrl);
           }}
           onConnectSensor={() => {
-            if (runtime.sensorBridgeUrl) runtime.connectSensorSocket(runtime.sensorBridgeUrl);
+            if (runtime.sensorInputUrl) runtime.connectSensorSocket(runtime.sensorInputUrl);
           }}
           onDisconnectCamera={runtime.disconnectSocket}
           onDisconnectSensor={runtime.disconnectSensorSocket}
@@ -79,7 +79,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
           onOpenLogs={() => setLogsOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
           riskTone={highestRiskChannel?.runtime.alertTier ?? 'normal'}
-          sensorConnectDisabled={!runtime.sensorBridgeUrl}
+          sensorConnectDisabled={!runtime.sensorInputUrl}
           sensorDisconnectDisabled={sensorDisconnectDisabled}
           totalCount={channels.length}
         />
@@ -108,6 +108,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
 
       <SettingsModal
         applySensorBridgeUrl={runtime.applySensorBridgeUrl}
+        applySensorInputUrl={runtime.applySensorInputUrl}
         applyWsUrl={runtime.applyWsUrl}
         applyRtspControlUrl={runtime.applyRtspControlUrl}
         configMessage={runtime.configMessage}
@@ -117,6 +118,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         applyRtspUrl={runtime.applyRtspUrl}
         applyTelegramSettings={runtime.applyTelegramSettings}
         sensorBridgeDraft={runtime.sensorBridgeDraft}
+        sensorInputDraft={runtime.sensorInputDraft}
         rtspControlDraft={runtime.rtspControlDraft}
         sensorSettingsMessage={runtime.sensorSettingsMessage}
         sensorPopupDurationMs={runtime.sensorPopupDurationMs}
@@ -150,6 +152,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         updateTelegramChatSelection={runtime.updateTelegramChatSelection}
         updateTelegramSensorCooldownDraft={runtime.updateTelegramSensorCooldownDraft}
         updateSensorBridgeDraft={runtime.updateSensorBridgeDraft}
+        updateSensorInputDraft={runtime.updateSensorInputDraft}
         updateRtspControlDraft={runtime.updateRtspControlDraft}
         updateRtspUrlDraft={runtime.updateRtspUrlDraft}
         updateWsDraft={runtime.updateWsDraft}
