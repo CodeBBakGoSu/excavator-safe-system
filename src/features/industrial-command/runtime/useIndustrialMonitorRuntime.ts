@@ -796,7 +796,7 @@ function isPopupSuppressingApprovedWorker(worker: FrontendStateWorker) {
 }
 
 function isTag3DangerWorker(worker: FrontendStateWorker) {
-  return worker.tagId === 3 && worker.zoneStatus === 'danger';
+  return worker.tagId === 3 && worker.isEmergency === true;
 }
 
 function findNearestSensorWorker(sensorSnapshot: FrontendStateSnapshot | null) {

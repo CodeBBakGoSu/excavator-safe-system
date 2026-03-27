@@ -506,7 +506,7 @@ describe('deriveHazardControlState', () => {
     expect(result.popupReason).toBe('ai_only');
   });
 
-  it('uses only tag 3 danger status when the tag 3 danger popup option is enabled', () => {
+  it('uses only tag 3 emergency status when the tag 3 danger popup option is enabled', () => {
     const result = deriveHazardControlState({
       sensorSnapshot: createSnapshot([
         {
@@ -530,8 +530,8 @@ describe('deriveHazardControlState', () => {
           x: 0,
           y: 0,
           distanceM: 1.1,
-          zoneStatus: 'danger',
-          isWarning: true,
+          zoneStatus: 'safe',
+          isWarning: false,
           isEmergency: true,
           lastUpdate: '2026-03-27T09:00:00+09:00',
         },

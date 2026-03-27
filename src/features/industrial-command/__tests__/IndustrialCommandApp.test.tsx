@@ -903,7 +903,7 @@ describe('IndustrialCommandApp', () => {
     expect(MockWebSocket.instances[1].sent[1]).toContain('"command":"on"');
   });
 
-  it('only opens the popup for tag 3 danger when the tag 3 danger option is enabled', () => {
+  it('only opens the popup for tag 3 emergency when the tag 3 danger option is enabled', () => {
     window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');
     window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://localhost:8787');
     window.localStorage.setItem('excavator-safe-system:tag-3-danger-popup-only', 'true');
@@ -983,8 +983,8 @@ describe('IndustrialCommandApp', () => {
               x: 1,
               y: 2,
               distance_m: 2.24,
-              zone_status: 'danger',
-              is_warning: true,
+              zone_status: 'safe',
+              is_warning: false,
               is_emergency: true,
               last_update: '2026-03-27T09:00:21+09:00',
             },

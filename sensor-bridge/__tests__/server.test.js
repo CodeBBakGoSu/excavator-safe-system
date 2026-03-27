@@ -2,6 +2,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  containsTag3EmergencyPayload,
   createAiAlertMessage,
   createBridgeHttpHandler,
   createLightControlBridge,
@@ -131,6 +132,70 @@ describe('createLogRequestHandler', () => {
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Allow-Private-Network': 'true',
     });
+  });
+});
+
+describe('containsTag3EmergencyPayload', () => {
+  it('returns true when a frontend_state payload includes tag 3 emergency', () => {
+    expect(
+      containsTag3EmergencyPayload(`~${JSON.stringify({
+        type: 'frontend_state',
+        timestamp: '2026-03-27T14:12:39.987+09:00',
+        system: {
+          sensor_server_online: true,
+          zone_rule: {
+            caution_distance_m: 5,
+            danger_distance_m: 3,
+          },
+        },
+        workers: [
+          {
+            tag_id: 3,
+            name: 'worker_3',
+            approved: false,
+            connected: true,
+            x: 0,
+            y: 0,
+            distance_m: 1.2,
+            zone_status: 'safe',
+            is_warning: false,
+            is_emergency: true,
+            last_update: '2026-03-27T14:12:39.995+09:00',
+          },
+        ],
+      })}~`)
+    ).toBe(true);
+  });
+
+  it('returns false when tag 3 is present without emergency', () => {
+    expect(
+      containsTag3EmergencyPayload(JSON.stringify({
+        type: 'frontend_state',
+        timestamp: '2026-03-27T14:12:39.987+09:00',
+        system: {
+          sensor_server_online: true,
+          zone_rule: {
+            caution_distance_m: 5,
+            danger_distance_m: 3,
+          },
+        },
+        workers: [
+          {
+            tag_id: 3,
+            name: 'worker_3',
+            approved: false,
+            connected: true,
+            x: 0,
+            y: 0,
+            distance_m: 9.7,
+            zone_status: 'safe',
+            is_warning: false,
+            is_emergency: false,
+            last_update: '2026-03-27T14:12:39.995+09:00',
+          },
+        ],
+      }))
+    ).toBe(false);
   });
 });
 

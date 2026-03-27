@@ -285,6 +285,78 @@ export function createBridgeMessage(buffer) {
   return JSON.stringify(parsed);
 }
 
+export function extractJsonObjectPayloads(rawText) {
+  const text = String(rawText || '').trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? [parsed] : [];
+  } catch {
+    // Fall back to extracting brace-delimited JSON objects from framed websocket text.
+  }
+
+  const payloads = [];
+  let depth = 0;
+  let startIndex = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (character === '{') {
+      if (depth === 0) startIndex = index;
+      depth += 1;
+      continue;
+    }
+
+    if (character === '}') {
+      depth -= 1;
+      if (depth === 0 && startIndex >= 0) {
+        try {
+          const parsed = JSON.parse(text.slice(startIndex, index + 1));
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            payloads.push(parsed);
+          }
+        } catch {
+          // Ignore malformed fragments and continue scanning.
+        }
+        startIndex = -1;
+      }
+    }
+  }
+
+  return payloads;
+}
+
+export function containsTag3EmergencyPayload(rawText) {
+  return extractJsonObjectPayloads(rawText).some((payload) => {
+    try {
+      const validated = validateFrontendStatePayload(payload);
+      return validated.workers.some((worker) => worker.tag_id === 3 && worker.is_emergency === true);
+    } catch {
+      return false;
+    }
+  });
+}
+
 function ensureAiPacketRoot(payload) {
   return ensureObject(payload, 'payload');
 }
@@ -597,6 +669,9 @@ export function attachSensorRelayWebSocketServer({
 
     nextUpstream.on?.('message', (raw) => {
       logger.info(`sensor relay upstream message received (${String(raw).length} bytes)`);
+      if (containsTag3EmergencyPayload(String(raw))) {
+        logger.info('tag 3 emergency detected');
+      }
       broadcast(raw);
     });
 
