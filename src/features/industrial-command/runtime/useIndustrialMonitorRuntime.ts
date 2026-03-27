@@ -781,6 +781,10 @@ function isRiskyUnapprovedWorker(worker: FrontendStateWorker) {
   return worker.approved === false && (worker.isWarning || worker.isEmergency || worker.zoneStatus === 'danger');
 }
 
+function isPopupSuppressingApprovedWorker(worker: FrontendStateWorker) {
+  return (worker.tagId === 1 || worker.tagId === 2) && worker.approved === true;
+}
+
 function findNearestSensorWorker(sensorSnapshot: FrontendStateSnapshot | null) {
   if (!sensorSnapshot || sensorSnapshot.workers.length === 0) {
     return null;
@@ -805,9 +809,23 @@ function getSensorGateState(sensorSnapshot: FrontendStateSnapshot | null): {
     };
   }
 
+  if (isPopupSuppressingApprovedWorker(nearestSensorWorker)) {
+    return {
+      nearestSensorWorker,
+      sensorGateState: 'approved_nearest',
+    };
+  }
+
+  if (isRiskyUnapprovedWorker(nearestSensorWorker)) {
+    return {
+      nearestSensorWorker,
+      sensorGateState: 'unapproved_nearest',
+    };
+  }
+
   return {
     nearestSensorWorker,
-    sensorGateState: isRiskyUnapprovedWorker(nearestSensorWorker) ? 'unapproved_nearest' : 'approved_nearest',
+    sensorGateState: 'no_sensor',
   };
 }
 

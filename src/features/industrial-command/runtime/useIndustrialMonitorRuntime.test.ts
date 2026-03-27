@@ -317,12 +317,12 @@ describe('selectHazardPopupChannelId', () => {
 });
 
 describe('deriveHazardControlState', () => {
-  it('blocks all popups and turns the light off when the nearest sensor worker is approved', () => {
+  it('blocks all popups and turns the light off when worker 1 is the nearest approved worker', () => {
     const result = deriveHazardControlState({
       sensorSnapshot: createSnapshot([
         {
           tagId: 1,
-          name: 'approved-nearest',
+          name: 'approved-worker-1',
           approved: true,
           connected: true,
           x: 0,
@@ -334,7 +334,7 @@ describe('deriveHazardControlState', () => {
           lastUpdate: '2026-03-27T09:00:00+09:00',
         },
         {
-          tagId: 2,
+          tagId: 3,
           name: 'far-unapproved',
           approved: false,
           connected: true,
@@ -356,6 +356,103 @@ describe('deriveHazardControlState', () => {
     expect(result.effectiveHazardState).toBe('safe');
     expect(result.popupBlocked).toBe(true);
     expect(result.lightCommand).toBe('off');
+  });
+
+  it('also blocks popups when worker 2 is the nearest approved worker', () => {
+    const result = deriveHazardControlState({
+      sensorSnapshot: createSnapshot([
+        {
+          tagId: 2,
+          name: 'approved-worker-2',
+          approved: true,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 1.1,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: true,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+        {
+          tagId: 3,
+          name: 'far-unapproved',
+          approved: false,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 2.4,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: false,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+      ]),
+      aiHazardDetected: true,
+      latestRiskChannelId: 2,
+      latestFrameChannelId: 1,
+    });
+
+    expect(result.sensorGateState).toBe('approved_nearest');
+    expect(result.effectiveHazardState).toBe('safe');
+    expect(result.popupBlocked).toBe(true);
+    expect(result.lightCommand).toBe('off');
+  });
+
+  it('opens popups for worker 3 when worker 1 and 2 are approved elsewhere', () => {
+    const result = deriveHazardControlState({
+      sensorSnapshot: createSnapshot([
+        {
+          tagId: 1,
+          name: 'approved-worker-1',
+          approved: true,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 4.1,
+          zoneStatus: 'safe',
+          isWarning: false,
+          isEmergency: false,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+        {
+          tagId: 2,
+          name: 'approved-worker-2',
+          approved: true,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 3.4,
+          zoneStatus: 'safe',
+          isWarning: false,
+          isEmergency: false,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+        {
+          tagId: 3,
+          name: 'unapproved-worker-3',
+          approved: false,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 1.1,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: true,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+      ]),
+      aiHazardDetected: true,
+      latestRiskChannelId: 2,
+      latestFrameChannelId: 1,
+    });
+
+    expect(result.sensorGateState).toBe('unapproved_nearest');
+    expect(result.effectiveHazardState).toBe('hazardous');
+    expect(result.popupBlocked).toBe(false);
+    expect(result.lightCommand).toBe('on');
+    expect(result.selectedPopupChannelId).toBe(2);
+    expect(result.popupReason).toBe('nearest_unapproved_sensor');
   });
 
   it('opens popups and turns the light on when the nearest sensor worker is risky and unapproved', () => {
