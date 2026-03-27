@@ -37,6 +37,7 @@ const CAMERA_DISPLAY_COUNT_STORAGE_KEY = 'excavator-safe-system:camera-display-c
 const HAZARD_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:hazard-popup-duration-ms';
 const FIELD_STATE_POPUP_DURATION_STORAGE_KEY = 'excavator-safe-system:field-state-popup-duration-ms';
 const HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY = 'excavator-safe-system:hazard-popup-debounce-mode';
+const TAG_3_DANGER_POPUP_ONLY_STORAGE_KEY = 'excavator-safe-system:tag-3-danger-popup-only';
 const HAZARD_QUALIFICATION_WINDOW_MS = 1500;
 const DEFAULT_CCTV_WS_URL = 'ws://10.161.110.223:8876';
 const DEFAULT_SENSOR_BRIDGE_WS_URL = 'ws://10.161.110.223:8787';
@@ -132,12 +133,13 @@ export type TelegramKnownChat = {
   selected: boolean;
 };
 
-export type SensorGateState = 'no_sensor' | 'approved_nearest' | 'unapproved_nearest';
+export type SensorGateState = 'no_sensor' | 'approved_nearest' | 'unapproved_nearest' | 'tag_3_danger';
 export type EffectiveHazardState = 'safe' | 'hazardous';
 export type LightControlCommand = 'on' | 'off';
 export type LightControlReason =
   | 'nearest_approved_sensor'
   | 'nearest_unapproved_sensor'
+  | 'tag_3_danger_only'
   | 'ai_only'
   | 'idle';
 
@@ -742,6 +744,14 @@ function loadStoredHazardPopupDebounceMode(
   return defaultValue;
 }
 
+function loadStoredTag3DangerPopupOnly(defaultValue = false) {
+  if (typeof window === 'undefined') return defaultValue;
+  const stored = window.localStorage.getItem(TAG_3_DANGER_POPUP_ONLY_STORAGE_KEY);
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return defaultValue;
+}
+
 export function getRtspApiBase(
   rtspControlUrl: string,
   rtspControlDraft: string,
@@ -783,6 +793,10 @@ function isRiskyUnapprovedWorker(worker: FrontendStateWorker) {
 
 function isPopupSuppressingApprovedWorker(worker: FrontendStateWorker) {
   return (worker.tagId === 1 || worker.tagId === 2) && worker.approved === true;
+}
+
+function isTag3DangerWorker(worker: FrontendStateWorker) {
+  return worker.tagId === 3 && worker.zoneStatus === 'danger';
 }
 
 function findNearestSensorWorker(sensorSnapshot: FrontendStateSnapshot | null) {
@@ -859,12 +873,40 @@ export function deriveHazardControlState({
   aiHazardDetected,
   latestRiskChannelId,
   latestFrameChannelId,
+  tag3DangerPopupOnly,
 }: {
   sensorSnapshot: FrontendStateSnapshot | null;
   aiHazardDetected: boolean;
   latestRiskChannelId: number | null;
   latestFrameChannelId: number | null;
+  tag3DangerPopupOnly: boolean;
 }): HazardControlState {
+  if (tag3DangerPopupOnly) {
+    const tag3Worker = sensorSnapshot?.workers.find((worker) => worker.tagId === 3) ?? null;
+
+    if (tag3Worker && isTag3DangerWorker(tag3Worker)) {
+      return {
+        nearestSensorWorker: tag3Worker,
+        sensorGateState: 'tag_3_danger',
+        effectiveHazardState: 'hazardous',
+        popupBlocked: false,
+        popupReason: 'tag_3_danger_only',
+        lightCommand: 'on',
+        selectedPopupChannelId: selectHazardPopupChannelId(latestRiskChannelId, latestFrameChannelId),
+      };
+    }
+
+    return {
+      nearestSensorWorker: tag3Worker,
+      sensorGateState: 'no_sensor',
+      effectiveHazardState: 'safe',
+      popupBlocked: true,
+      popupReason: 'idle',
+      lightCommand: 'off',
+      selectedPopupChannelId: null,
+    };
+  }
+
   const { nearestSensorWorker, sensorGateState } = getSensorGateState(sensorSnapshot);
 
   if (sensorGateState === 'approved_nearest') {
@@ -945,6 +987,7 @@ export interface IndustrialMonitorRuntime {
   bboxVisible: boolean;
   overlayDisplayMode: OverlayDisplayMode;
   hazardPopupDebounceMode: HazardPopupDebounceMode;
+  tag3DangerPopupOnly: boolean;
   popupDurationMs: number;
   sensorPopupDurationMs: number;
   runtimeMap: Record<number, ChannelRuntimeState>;
@@ -987,6 +1030,7 @@ export interface IndustrialMonitorRuntime {
   updateBboxVisible: (value: boolean) => void;
   updateOverlayDisplayMode: (value: OverlayDisplayMode) => void;
   updateHazardPopupDebounceMode: (value: HazardPopupDebounceMode) => void;
+  updateTag3DangerPopupOnly: (value: boolean) => void;
   setPopupDurationMs: (value: number) => void;
   setSensorPopupDurationMs: (value: number) => void;
   updateTelegramBotTokenDraft: (value: string) => void;
@@ -1039,6 +1083,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const [hazardPopupDebounceMode, setHazardPopupDebounceMode] = useState<HazardPopupDebounceMode>(() =>
     loadStoredHazardPopupDebounceMode('recent_three_frames_two_risks')
   );
+  const [tag3DangerPopupOnly, setTag3DangerPopupOnly] = useState(() => loadStoredTag3DangerPopupOnly(false));
   const [popupDurationMs, setPopupDurationMsState] = useState(() =>
     loadStoredDuration(HAZARD_POPUP_DURATION_STORAGE_KEY, AUTO_POPUP_MS)
   );
@@ -1145,8 +1190,9 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         aiHazardDetected: popupSnapshot?.runtime.alertTier === 'risk',
         latestRiskChannelId: latestRiskChannelIdRef.current,
         latestFrameChannelId: latestFrameChannelIdRef.current,
+        tag3DangerPopupOnly,
       }),
-    [popupSnapshot, sensorSnapshot]
+    [popupSnapshot, sensorSnapshot, tag3DangerPopupOnly]
   );
 
   const appendCctvLog = useCallback((summary: string, detail: string) => {
@@ -1723,8 +1769,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
             latestRiskChannelIdRef.current = channel.id;
           }
 
-          const currentSensorGateState = getSensorGateState(sensorSnapshot).sensorGateState;
-          const shouldBlockPopup = currentSensorGateState === 'approved_nearest';
+          const currentSensorHazardState = deriveHazardControlState({
+            sensorSnapshot,
+            aiHazardDetected: false,
+            latestRiskChannelId: latestRiskChannelIdRef.current,
+            latestFrameChannelId: latestFrameChannelIdRef.current,
+            tag3DangerPopupOnly,
+          });
+          const shouldBlockPopup = currentSensorHazardState.popupBlocked;
           const shouldRelayCctvRisk =
             qualifiesForPopup &&
             !shouldBlockPopup &&
@@ -1818,6 +1870,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       relayCctvRiskToTelegram,
       refreshPopupTimer,
       sensorSnapshot,
+      tag3DangerPopupOnly,
       updateRuntime,
     ]
   );
@@ -1853,6 +1906,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
             aiHazardDetected: popupSnapshot?.runtime.alertTier === 'risk',
             latestRiskChannelId: latestRiskChannelIdRef.current,
             latestFrameChannelId: latestFrameChannelIdRef.current,
+            tag3DangerPopupOnly,
           });
           appendSensorLog(
             '현장 상태 스냅샷 수신',
@@ -1883,7 +1937,10 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
             continue;
           }
 
-          if (nextHazardState.sensorGateState === 'unapproved_nearest') {
+          if (
+            nextHazardState.sensorGateState === 'unapproved_nearest' ||
+            nextHazardState.sensorGateState === 'tag_3_danger'
+          ) {
             openSensorEmergencyHazardPopup();
           }
         }
@@ -1931,6 +1988,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       openSensorEmergencyHazardPopup,
       popupSnapshot,
       relaySensorSnapshotToTelegram,
+      tag3DangerPopupOnly,
     ]
   );
 
@@ -2058,6 +2116,13 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     recentRiskSamplesRef.current = {};
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(HAZARD_POPUP_DEBOUNCE_MODE_STORAGE_KEY, value);
+    }
+  }, []);
+
+  const updateTag3DangerPopupOnly = useCallback((value: boolean) => {
+    setTag3DangerPopupOnly(value);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(TAG_3_DANGER_POPUP_ONLY_STORAGE_KEY, String(value));
     }
   }, []);
 
@@ -2355,6 +2420,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     bboxVisible,
     overlayDisplayMode,
     hazardPopupDebounceMode,
+    tag3DangerPopupOnly,
     popupDurationMs,
     sensorPopupDurationMs,
     runtimeMap,
@@ -2401,6 +2467,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     updateBboxVisible,
     updateOverlayDisplayMode,
     updateHazardPopupDebounceMode,
+    updateTag3DangerPopupOnly,
     setPopupDurationMs,
     setSensorPopupDurationMs,
     focusChannel,

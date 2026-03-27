@@ -350,6 +350,7 @@ describe('deriveHazardControlState', () => {
       aiHazardDetected: true,
       latestRiskChannelId: 2,
       latestFrameChannelId: 1,
+      tag3DangerPopupOnly: false,
     });
 
     expect(result.sensorGateState).toBe('approved_nearest');
@@ -391,6 +392,7 @@ describe('deriveHazardControlState', () => {
       aiHazardDetected: true,
       latestRiskChannelId: 2,
       latestFrameChannelId: 1,
+      tag3DangerPopupOnly: false,
     });
 
     expect(result.sensorGateState).toBe('approved_nearest');
@@ -445,6 +447,7 @@ describe('deriveHazardControlState', () => {
       aiHazardDetected: true,
       latestRiskChannelId: 2,
       latestFrameChannelId: 1,
+      tag3DangerPopupOnly: false,
     });
 
     expect(result.sensorGateState).toBe('unapproved_nearest');
@@ -475,6 +478,7 @@ describe('deriveHazardControlState', () => {
       aiHazardDetected: false,
       latestRiskChannelId: 2,
       latestFrameChannelId: 1,
+      tag3DangerPopupOnly: false,
     });
 
     expect(result.sensorGateState).toBe('unapproved_nearest');
@@ -491,6 +495,7 @@ describe('deriveHazardControlState', () => {
       aiHazardDetected: true,
       latestRiskChannelId: null,
       latestFrameChannelId: 1,
+      tag3DangerPopupOnly: false,
     });
 
     expect(result.sensorGateState).toBe('no_sensor');
@@ -499,6 +504,49 @@ describe('deriveHazardControlState', () => {
     expect(result.lightCommand).toBe('on');
     expect(result.selectedPopupChannelId).toBe(1);
     expect(result.popupReason).toBe('ai_only');
+  });
+
+  it('uses only tag 3 danger status when the tag 3 danger popup option is enabled', () => {
+    const result = deriveHazardControlState({
+      sensorSnapshot: createSnapshot([
+        {
+          tagId: 1,
+          name: 'approved-worker-1',
+          approved: true,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 4.1,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: true,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+        {
+          tagId: 3,
+          name: 'worker-3',
+          approved: false,
+          connected: true,
+          x: 0,
+          y: 0,
+          distanceM: 1.1,
+          zoneStatus: 'danger',
+          isWarning: true,
+          isEmergency: true,
+          lastUpdate: '2026-03-27T09:00:00+09:00',
+        },
+      ]),
+      aiHazardDetected: false,
+      latestRiskChannelId: 2,
+      latestFrameChannelId: 1,
+      tag3DangerPopupOnly: true,
+    });
+
+    expect(result.sensorGateState).toBe('tag_3_danger');
+    expect(result.popupBlocked).toBe(false);
+    expect(result.lightCommand).toBe('on');
+    expect(result.popupReason).toBe('tag_3_danger_only');
+    expect(result.selectedPopupChannelId).toBe(2);
   });
 });
 

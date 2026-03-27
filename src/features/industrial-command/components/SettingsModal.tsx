@@ -26,6 +26,7 @@ interface SettingsModalProps {
   bboxVisible: boolean;
   overlayDisplayMode: 'always' | 'alert' | 'risk';
   hazardPopupDebounceMode: 'recent_three_frames_two_risks' | 'consecutive_two_risks';
+  tag3DangerPopupOnly: boolean;
   popupDurationMs: number;
   sensorPopupDurationMs: number;
   configMessage: string | null;
@@ -57,6 +58,7 @@ interface SettingsModalProps {
   updateBboxVisible: (value: boolean) => void;
   updateOverlayDisplayMode: (value: 'always' | 'alert' | 'risk') => void;
   updateHazardPopupDebounceMode: (value: 'recent_three_frames_two_risks' | 'consecutive_two_risks') => void;
+  updateTag3DangerPopupOnly: (value: boolean) => void;
   setPopupDurationMs: (value: number) => void;
   setSensorPopupDurationMs: (value: number) => void;
   applyWsUrl: () => void;
@@ -81,6 +83,7 @@ export function SettingsModal({
   bboxVisible,
   overlayDisplayMode,
   hazardPopupDebounceMode,
+  tag3DangerPopupOnly,
   popupDurationMs,
   sensorPopupDurationMs,
   configMessage,
@@ -107,6 +110,7 @@ export function SettingsModal({
   updateBboxVisible,
   updateOverlayDisplayMode,
   updateHazardPopupDebounceMode,
+  updateTag3DangerPopupOnly,
   setPopupDurationMs,
   setSensorPopupDurationMs,
   applyWsUrl,
@@ -124,6 +128,7 @@ export function SettingsModal({
   const [cameraDisplayCountDraft, setCameraDisplayCountDraft] = useState<2 | 4>(cameraDisplayCount);
   const [overlayDisplayModeDraft, setOverlayDisplayModeDraft] = useState(overlayDisplayMode);
   const [hazardPopupDebounceModeDraft, setHazardPopupDebounceModeDraft] = useState(hazardPopupDebounceMode);
+  const [tag3DangerPopupOnlyDraft, setTag3DangerPopupOnlyDraft] = useState(tag3DangerPopupOnly);
   const [hazardDurationDraft, setHazardDurationDraft] = useState(toSecondsDraft(popupDurationMs));
   const [fieldStateDurationDraft, setFieldStateDurationDraft] = useState(toSecondsDraft(sensorPopupDurationMs));
   const [durationError, setDurationError] = useState<string | null>(null);
@@ -135,10 +140,11 @@ export function SettingsModal({
     setCameraDisplayCountDraft(cameraDisplayCount);
     setOverlayDisplayModeDraft(overlayDisplayMode);
     setHazardPopupDebounceModeDraft(hazardPopupDebounceMode);
+    setTag3DangerPopupOnlyDraft(tag3DangerPopupOnly);
     setHazardDurationDraft(toSecondsDraft(popupDurationMs));
     setFieldStateDurationDraft(toSecondsDraft(sensorPopupDurationMs));
     setDurationError(null);
-  }, [bboxVisible, cameraDisplayCount, hazardPopupDebounceMode, open, overlayDisplayMode, popupDurationMs, sensorPopupDurationMs]);
+  }, [bboxVisible, cameraDisplayCount, hazardPopupDebounceMode, open, overlayDisplayMode, popupDurationMs, sensorPopupDurationMs, tag3DangerPopupOnly]);
 
   useEffect(() => {
     if (!open) return;
@@ -332,6 +338,22 @@ export function SettingsModal({
                   value={fieldStateDurationDraft}
                 />
               </label>
+
+              <label className="flex items-start gap-3 rounded-2xl border border-outline/40 bg-background px-4 py-3 sm:col-span-2">
+                <input
+                  aria-label="Tag 3 데인저 전용 팝업"
+                  checked={tag3DangerPopupOnlyDraft}
+                  className="mt-1 size-4 rounded border-outline/40 text-primary focus:ring-primary/30"
+                  onChange={(event) => setTag3DangerPopupOnlyDraft(event.target.checked)}
+                  type="checkbox"
+                />
+                <span className="space-y-1">
+                  <span className="block text-sm font-medium text-on-surface">Tag 3 데인저 전용 팝업</span>
+                  <span className="block text-sm leading-6 text-on-surface-variant">
+                    켜면 센서에서 `tag 3`만 확인하고, `danger` 존 진입 시에만 팝업과 경광등을 동작시킵니다.
+                  </span>
+                </span>
+              </label>
             </div>
             <div className="mt-4 flex justify-end">
               <button
@@ -350,6 +372,7 @@ export function SettingsModal({
                   updateCameraDisplayCount(cameraDisplayCountDraft);
                   updateOverlayDisplayMode(overlayDisplayModeDraft);
                   updateHazardPopupDebounceMode(hazardPopupDebounceModeDraft);
+                  updateTag3DangerPopupOnly(tag3DangerPopupOnlyDraft);
                   setPopupDurationMs(nextHazardDuration);
                   setSensorPopupDurationMs(nextFieldStateDuration);
                 }}

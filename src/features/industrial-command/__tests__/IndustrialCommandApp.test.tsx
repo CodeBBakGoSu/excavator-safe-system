@@ -903,6 +903,99 @@ describe('IndustrialCommandApp', () => {
     expect(MockWebSocket.instances[1].sent[1]).toContain('"command":"on"');
   });
 
+  it('only opens the popup for tag 3 danger when the tag 3 danger option is enabled', () => {
+    window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://localhost:8787');
+    window.localStorage.setItem('excavator-safe-system:tag-3-danger-popup-only', 'true');
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: '카메라 연결' }));
+    fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
+
+    act(() => {
+      MockWebSocket.instances[0].emitOpen();
+      MockWebSocket.instances[1].emitOpen();
+      emitCctvFrame({
+        frame_index: 51,
+        combined_ko: '작업자 위험 접근',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
+      emitCctvFrame({
+        frame_index: 52,
+        combined_ko: '작업자 위험 접근 지속',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
+      MockWebSocket.instances[1].emitMessage(
+        JSON.stringify({
+          type: 'frontend_state',
+          timestamp: '2026-03-27T09:00:18+09:00',
+          system: {
+            sensor_server_online: true,
+            zone_rule: {
+              caution_distance_m: 5,
+              danger_distance_m: 3,
+            },
+          },
+          workers: [
+            {
+              tag_id: 1,
+              name: 'worker_1',
+              approved: true,
+              connected: true,
+              x: 1,
+              y: 2,
+              distance_m: 2.24,
+              zone_status: 'danger',
+              is_warning: true,
+              is_emergency: true,
+              last_update: '2026-03-27T09:00:17+09:00',
+            },
+          ],
+        })
+      );
+    });
+
+    expect(screen.queryByRole('dialog', { name: '위험 이벤트 상세' })).not.toBeInTheDocument();
+
+    act(() => {
+      MockWebSocket.instances[1].emitMessage(
+        JSON.stringify({
+          type: 'frontend_state',
+          timestamp: '2026-03-27T09:00:22+09:00',
+          system: {
+            sensor_server_online: true,
+            zone_rule: {
+              caution_distance_m: 5,
+              danger_distance_m: 3,
+            },
+          },
+          workers: [
+            {
+              tag_id: 3,
+              name: 'worker_3',
+              approved: false,
+              connected: true,
+              x: 1,
+              y: 2,
+              distance_m: 2.24,
+              zone_status: 'danger',
+              is_warning: true,
+              is_emergency: true,
+              last_update: '2026-03-27T09:00:21+09:00',
+            },
+          ],
+        })
+      );
+    });
+
+    expect(screen.getByRole('dialog', { name: '위험 이벤트 상세' })).toBeInTheDocument();
+  });
+
   it('keeps log headers pinned while the log list scrolls and exposes the RTSP third-quadrant tile', () => {
     emitLiveData();
 

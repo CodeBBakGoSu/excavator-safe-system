@@ -101,6 +101,7 @@ function createCallbackRecorder() {
     updateCameraDisplayCount: vi.fn(),
     updateOverlayDisplayMode: vi.fn(),
     updateHazardPopupDebounceMode: vi.fn(),
+    updateTag3DangerPopupOnly: vi.fn(),
     setPopupDurationMs: vi.fn(),
     setSensorPopupDurationMs: vi.fn(),
     applyWsUrl: vi.fn(),
@@ -133,6 +134,7 @@ function SettingsWorkflowHarness({
   const [hazardPopupDebounceMode, setHazardPopupDebounceMode] = useState<
     'recent_three_frames_two_risks' | 'consecutive_two_risks'
   >('recent_three_frames_two_risks');
+  const [tag3DangerPopupOnly, setTag3DangerPopupOnly] = useState(false);
   const [popupDurationMs, setPopupDurationMs] = useState(2000);
   const [sensorPopupDurationMs, setSensorPopupDurationMs] = useState(3200);
   const [telegramBotTokenDraft, setTelegramBotTokenDraft] = useState('');
@@ -157,6 +159,7 @@ function SettingsWorkflowHarness({
     bboxVisible: true,
     overlayDisplayMode,
     hazardPopupDebounceMode,
+    tag3DangerPopupOnly,
     popupDurationMs,
     sensorPopupDurationMs,
     runtimeMap: {
@@ -231,6 +234,10 @@ function SettingsWorkflowHarness({
     updateHazardPopupDebounceMode: (value: 'recent_three_frames_two_risks' | 'consecutive_two_risks') => {
       recorder.updateHazardPopupDebounceMode(value);
       setHazardPopupDebounceMode(value);
+    },
+    updateTag3DangerPopupOnly: (value: boolean) => {
+      recorder.updateTag3DangerPopupOnly(value);
+      setTag3DangerPopupOnly(value);
     },
     setPopupDurationMs: (value: number) => {
       recorder.setPopupDurationMs(value);
@@ -316,6 +323,7 @@ describe('SettingsModal', () => {
     expect(screen.getByLabelText('BBOX 표시 여부')).toHaveValue('true');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('always');
     expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('recent_three_frames_two_risks');
+    expect(screen.getByRole('checkbox', { name: 'Tag 3 데인저 전용 팝업' })).not.toBeChecked();
     expect(screen.getByLabelText('위험 팝업 시간(초)')).toHaveValue(2);
     expect(screen.getByLabelText('현장 상태 팝업 시간(초)')).toHaveValue(3.2);
     expect(screen.getByLabelText('Telegram Bot Token')).toHaveValue('');
@@ -358,6 +366,7 @@ describe('SettingsModal', () => {
     fireEvent.change(screen.getByLabelText('위험 팝업 감지 방식'), {
       target: { value: 'consecutive_two_risks' },
     });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tag 3 데인저 전용 팝업' }));
     fireEvent.change(screen.getByLabelText('위험 팝업 시간(초)'), {
       target: { value: '4.5' },
     });
@@ -392,6 +401,7 @@ describe('SettingsModal', () => {
     expect(screen.getByLabelText('카메라 화면 개수')).toHaveValue('2');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('risk');
     expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('consecutive_two_risks');
+    expect(screen.getByRole('checkbox', { name: 'Tag 3 데인저 전용 팝업' })).toBeChecked();
     expect(screen.getByLabelText('위험 팝업 시간(초)')).toHaveValue(4.5);
     expect(screen.getByLabelText('현장 상태 팝업 시간(초)')).toHaveValue(6.2);
     expect(recorder.setPopupDurationMs).not.toHaveBeenCalled();
@@ -415,6 +425,7 @@ describe('SettingsModal', () => {
     expect(recorder.updateCameraDisplayCount).toHaveBeenCalledWith(2);
     expect(recorder.updateOverlayDisplayMode).toHaveBeenCalledWith('risk');
     expect(recorder.updateHazardPopupDebounceMode).toHaveBeenCalledWith('consecutive_two_risks');
+    expect(recorder.updateTag3DangerPopupOnly).toHaveBeenCalledWith(true);
     expect(recorder.setPopupDurationMs).toHaveBeenCalledWith(4500);
     expect(recorder.setSensorPopupDurationMs).toHaveBeenCalledWith(6200);
     expect(recorder.startRtspStream).not.toHaveBeenCalled();
@@ -449,6 +460,7 @@ describe('SettingsModal', () => {
     fireEvent.change(screen.getByLabelText('위험 팝업 감지 방식'), {
       target: { value: 'consecutive_two_risks' },
     });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tag 3 데인저 전용 팝업' }));
     fireEvent.change(screen.getByLabelText('위험 팝업 시간(초)'), {
       target: { value: '4.5' },
     });
@@ -466,6 +478,7 @@ describe('SettingsModal', () => {
     expect(window.localStorage.getItem('excavator-safe-system:hazard-popup-duration-ms')).toBe('4500');
     expect(window.localStorage.getItem('excavator-safe-system:field-state-popup-duration-ms')).toBe('6200');
     expect(window.localStorage.getItem('excavator-safe-system:hazard-popup-debounce-mode')).toBe('consecutive_two_risks');
+    expect(window.localStorage.getItem('excavator-safe-system:tag-3-danger-popup-only')).toBe('true');
     expect(window.localStorage.getItem('excavator-safe-system:rtsp-control-api-url')).toBe('http://192.168.1.7:10000');
   });
 
@@ -482,6 +495,7 @@ describe('SettingsModal', () => {
     expect(screen.getByLabelText('BBOX 표시 여부')).toHaveValue('true');
     expect(screen.getByLabelText('박스 표시 조건')).toHaveValue('alert');
     expect(screen.getByLabelText('위험 팝업 감지 방식')).toHaveValue('recent_three_frames_two_risks');
+    expect(screen.getByRole('checkbox', { name: 'Tag 3 데인저 전용 팝업' })).not.toBeChecked();
     expect(screen.getByLabelText('위험 팝업 시간(초)')).toHaveValue(2);
     expect(screen.getByText(/TOKEN 8385/i)).toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /기현/ })).not.toBeInTheDocument();

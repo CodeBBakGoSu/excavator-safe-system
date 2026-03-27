@@ -137,6 +137,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         bboxVisible={runtime.bboxVisible}
         overlayDisplayMode={runtime.overlayDisplayMode}
         hazardPopupDebounceMode={runtime.hazardPopupDebounceMode}
+        tag3DangerPopupOnly={runtime.tag3DangerPopupOnly}
         setPopupDurationMs={runtime.setPopupDurationMs}
         setSensorPopupDurationMs={runtime.setSensorPopupDurationMs}
         startRtspStream={runtime.startRtspStream}
@@ -145,6 +146,7 @@ export function IndustrialCommandShell({ runtime }: { runtime: IndustrialMonitor
         updateBboxVisible={runtime.updateBboxVisible}
         updateOverlayDisplayMode={runtime.updateOverlayDisplayMode}
         updateHazardPopupDebounceMode={runtime.updateHazardPopupDebounceMode}
+        updateTag3DangerPopupOnly={runtime.updateTag3DangerPopupOnly}
         updateTelegramAutoSync={runtime.updateTelegramAutoSync}
         updateTelegramBotTokenDraft={runtime.updateTelegramBotTokenDraft}
         updateTelegramChatSelection={runtime.updateTelegramChatSelection}
