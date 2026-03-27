@@ -1853,8 +1853,6 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
           if (nextHazardState.sensorGateState === 'approved_nearest') {
             clearPopupTimer();
             closePopupState();
-            clearSensorPopupTimer();
-            setSensorPopupOpen(false);
             continue;
           }
 
@@ -1940,14 +1938,11 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     if (hazardControlState.sensorGateState === 'approved_nearest' && popupSnapshot) {
       clearPopupTimer();
       closePopupState();
-      clearSensorPopupTimer();
-      setSensorPopupOpen(false);
     }
 
     sendLightControlCommand(hazardControlState.lightCommand, hazardControlState.popupReason);
   }, [
     clearPopupTimer,
-    clearSensorPopupTimer,
     closePopupState,
     hazardControlState.lightCommand,
     hazardControlState.popupReason,

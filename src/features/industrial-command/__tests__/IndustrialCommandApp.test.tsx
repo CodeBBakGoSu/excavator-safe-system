@@ -860,6 +860,83 @@ describe('IndustrialCommandApp', () => {
     expect(within(populatedFieldStateDialog).queryByText('아직 수신된 현장 상태 스냅샷이 없습니다.')).not.toBeInTheDocument();
   });
 
+  it('keeps the manual field-state popup open while approved sensor snapshots continue to arrive', () => {
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://localhost:8787');
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
+
+    act(() => {
+      MockWebSocket.instances[0].emitOpen();
+      MockWebSocket.instances[0].emitMessage(
+        JSON.stringify({
+          type: 'frontend_state',
+          timestamp: '2026-03-27T09:00:15+09:00',
+          system: {
+            sensor_server_online: true,
+            zone_rule: {
+              caution_distance_m: 5,
+              danger_distance_m: 3,
+            },
+          },
+          workers: [
+            {
+              tag_id: 21,
+              name: 'worker_21',
+              approved: true,
+              connected: true,
+              x: 1,
+              y: 2,
+              distance_m: 2.24,
+              zone_status: 'safe',
+              is_warning: false,
+              is_emergency: false,
+              last_update: '2026-03-27T09:00:14+09:00',
+            },
+          ],
+        })
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '현장 상태' }));
+    expect(screen.getByRole('dialog', { name: '현장 상태 스냅샷' })).toBeInTheDocument();
+
+    act(() => {
+      MockWebSocket.instances[0].emitMessage(
+        JSON.stringify({
+          type: 'frontend_state',
+          timestamp: '2026-03-27T09:00:18+09:00',
+          system: {
+            sensor_server_online: true,
+            zone_rule: {
+              caution_distance_m: 5,
+              danger_distance_m: 3,
+            },
+          },
+          workers: [
+            {
+              tag_id: 21,
+              name: 'worker_21',
+              approved: true,
+              connected: true,
+              x: 1,
+              y: 2,
+              distance_m: 2.24,
+              zone_status: 'safe',
+              is_warning: false,
+              is_emergency: false,
+              last_update: '2026-03-27T09:00:17+09:00',
+            },
+          ],
+        })
+      );
+    });
+
+    expect(screen.getByRole('dialog', { name: '현장 상태 스냅샷' })).toBeInTheDocument();
+    expect(screen.getAllByText('worker_21')).toHaveLength(2);
+  });
+
   it('opens a sensor emergency popup on a random recent CH-01/CH-02 frame and keeps its bbox overlay', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.75);
     window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');

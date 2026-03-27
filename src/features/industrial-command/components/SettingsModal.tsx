@@ -214,7 +214,7 @@ export function SettingsModal({
                 <input
                   className="w-full rounded-2xl border border-outline/40 bg-background px-4 py-3 text-sm text-on-surface outline-none transition-colors placeholder:text-secondary focus:border-primary focus:ring-2 focus:ring-primary/30"
                   onChange={(event) => updateSensorBridgeDraft(event.target.value)}
-                  placeholder="ws://localhost:8787"
+                  placeholder="ws://10.161.110.223:8787"
                   spellCheck={false}
                   type="text"
                   value={sensorBridgeDraft}
