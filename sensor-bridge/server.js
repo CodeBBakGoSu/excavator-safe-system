@@ -423,12 +423,14 @@ export function createLightControlBridge({
   createConnection = net.createConnection,
   logger = console,
 } = {}) {
-  let lastCommand = null;
+  let lastPayloadSignature = null;
 
   return {
     async relay(payload) {
       const validatedPayload = validateLightControlPayload(payload);
-      if (validatedPayload.command === lastCommand) {
+      const payloadSignature = JSON.stringify(validatedPayload);
+
+      if (payloadSignature === lastPayloadSignature) {
         return {
           delivered: false,
           deduplicated: true,
@@ -466,7 +468,7 @@ export function createLightControlBridge({
         });
       });
 
-      lastCommand = validatedPayload.command;
+      lastPayloadSignature = payloadSignature;
       return {
         delivered: true,
         deduplicated: false,

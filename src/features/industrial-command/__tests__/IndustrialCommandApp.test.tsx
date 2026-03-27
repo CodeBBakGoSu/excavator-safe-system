@@ -437,7 +437,8 @@ describe('IndustrialCommandApp', () => {
     fireEvent.click(screen.getByRole('button', { name: '로그 닫기' }));
     fireEvent.click(screen.getByRole('button', { name: '위험 보기' }));
 
-    expect(screen.queryByRole('dialog', { name: '위험 이벤트 상세' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '위험 이벤트 상세' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '위험 보기 닫기' }));
 
     fireEvent.click(screen.getByRole('button', { name: '현장 상태' }));
 
@@ -779,6 +780,127 @@ describe('IndustrialCommandApp', () => {
     const stickyDialog = screen.getByRole('dialog', { name: '위험 이벤트 상세' });
     expect(within(stickyDialog).getByText('경고: 작업자 접근')).toBeInTheDocument();
     expect(within(stickyDialog).queryByText('아직 수신된 위험 프레임이 없습니다.')).not.toBeInTheDocument();
+  });
+
+  it('keeps an open hazard popup visible when approved sensor updates arrive', () => {
+    window.localStorage.setItem('excavator-safe-system:cctv-poc-ws-url', 'ws://localhost:9999/frames');
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://localhost:8787');
+    window.localStorage.setItem('excavator-safe-system:hazard-popup-duration-ms', '5000');
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: '카메라 연결' }));
+    fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
+
+    act(() => {
+      MockWebSocket.instances[0].emitOpen();
+      MockWebSocket.instances[1].emitOpen();
+      emitCctvFrame({
+        frame_index: 41,
+        combined_ko: '작업자 위험 접근',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
+      emitCctvFrame({
+        frame_index: 42,
+        combined_ko: '작업자 위험 접근 지속',
+        top_event_ko: '경고: 작업자 접근',
+        events_ko: ['작업자 접근'],
+        event_object_groups: [{ event: { level: 'RISK', message_ko: '경고: 작업자 접근' }, track_ids: [7] }],
+      });
+    });
+
+    expect(screen.getByRole('dialog', { name: '위험 이벤트 상세' })).toBeInTheDocument();
+
+    act(() => {
+      MockWebSocket.instances[1].emitMessage(
+        JSON.stringify({
+          type: 'frontend_state',
+          timestamp: '2026-03-27T09:00:18+09:00',
+          system: {
+            sensor_server_online: true,
+            zone_rule: {
+              caution_distance_m: 5,
+              danger_distance_m: 3,
+            },
+          },
+          workers: [
+            {
+              tag_id: 31,
+              name: 'worker_31',
+              approved: true,
+              connected: true,
+              x: 1,
+              y: 2,
+              distance_m: 2.24,
+              zone_status: 'safe',
+              is_warning: false,
+              is_emergency: false,
+              last_update: '2026-03-27T09:00:17+09:00',
+            },
+          ],
+        })
+      );
+    });
+
+    expect(screen.getByRole('dialog', { name: '위험 이벤트 상세' })).toBeInTheDocument();
+  });
+
+  it('re-sends the light-control on command every few seconds while sensor danger persists', () => {
+    window.localStorage.setItem('excavator-safe-system:sensor-bridge-ws-url', 'ws://localhost:8787');
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: '센서 연결' }));
+
+    act(() => {
+      MockWebSocket.instances[0].emitOpen();
+      MockWebSocket.instances[0].emitMessage(
+        JSON.stringify({
+          type: 'frontend_state',
+          timestamp: '2026-03-27T09:00:15+09:00',
+          system: {
+            sensor_server_online: true,
+            zone_rule: {
+              caution_distance_m: 5,
+              danger_distance_m: 3,
+            },
+          },
+          workers: [
+            {
+              tag_id: 41,
+              name: 'worker_41',
+              approved: false,
+              connected: true,
+              x: 1,
+              y: 2,
+              distance_m: 2.24,
+              zone_status: 'danger',
+              is_warning: true,
+              is_emergency: true,
+              last_update: '2026-03-27T09:00:14+09:00',
+            },
+          ],
+        })
+      );
+    });
+
+    expect(MockWebSocket.instances[1]?.url).toBe('ws://10.161.110.223:8787/ws/light-control');
+
+    act(() => {
+      MockWebSocket.instances[1].emitOpen();
+    });
+
+    expect(MockWebSocket.instances[1].sent).toHaveLength(1);
+    expect(MockWebSocket.instances[1].sent[0]).toContain('"command":"on"');
+
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    expect(MockWebSocket.instances[1].sent).toHaveLength(2);
+    expect(MockWebSocket.instances[1].sent[1]).toContain('"command":"on"');
   });
 
   it('keeps log headers pinned while the log list scrolls and exposes the RTSP third-quadrant tile', () => {

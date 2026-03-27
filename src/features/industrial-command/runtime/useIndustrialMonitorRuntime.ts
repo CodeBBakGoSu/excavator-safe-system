@@ -17,6 +17,7 @@ import type {
 
 const AUTO_POPUP_MS = 2000;
 const SENSOR_AUTO_POPUP_MS = AUTO_POPUP_MS + 1200;
+const LIGHT_CONTROL_KEEPALIVE_MS = 3000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000];
 const MAX_STREAM_LOGS = 200;
@@ -1081,6 +1082,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   const popupTimerRef = useRef<number | null>(null);
   const popupChannelIdRef = useRef<number | null>(null);
   const sensorPopupTimerRef = useRef<number | null>(null);
+  const lightControlRepeatTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const frameTimesRef = useRef<Record<number, number[]>>({});
   const recentRiskSamplesRef = useRef<Record<number, HazardRiskSample[]>>({});
@@ -1187,12 +1189,14 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
   }, [appendSensorLog, flushLightControlQueue, rtspControlApiBase]);
 
   const sendLightControlCommand = useCallback(
-    (command: LightControlCommand, reason: LightControlReason) => {
-      if (command === 'off' && lastLightCommandSentRef.current == null) {
+    (command: LightControlCommand, reason: LightControlReason, options?: { force?: boolean }) => {
+      const force = options?.force === true;
+
+      if (!force && command === 'off' && lastLightCommandSentRef.current == null) {
         return;
       }
 
-      if (command === lastLightCommandSentRef.current) {
+      if (!force && command === lastLightCommandSentRef.current) {
         return;
       }
 
@@ -1476,6 +1480,13 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
     if (sensorPopupTimerRef.current != null) {
       window.clearTimeout(sensorPopupTimerRef.current);
       sensorPopupTimerRef.current = null;
+    }
+  }, []);
+
+  const clearLightControlRepeatTimer = useCallback(() => {
+    if (lightControlRepeatTimerRef.current != null) {
+      window.clearInterval(lightControlRepeatTimerRef.current);
+      lightControlRepeatTimerRef.current = null;
     }
   }, []);
 
@@ -1851,8 +1862,6 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
           }
 
           if (nextHazardState.sensorGateState === 'approved_nearest') {
-            clearPopupTimer();
-            closePopupState();
             continue;
           }
 
@@ -1915,6 +1924,7 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
       clearPopupTimer();
       clearSensorReconnectTimer();
       clearSensorPopupTimer();
+      clearLightControlRepeatTimer();
       if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
         wsRef.current.close(1000, 'component unmount');
       }
@@ -1932,22 +1942,29 @@ export function useIndustrialMonitorRuntime(): IndustrialMonitorRuntime {
         lightControlWsRef.current.close(1000, 'component unmount');
       }
     };
-  }, [clearPopupTimer, clearReconnectTimer, clearSensorPopupTimer, clearSensorReconnectTimer]);
+  }, [clearLightControlRepeatTimer, clearPopupTimer, clearReconnectTimer, clearSensorPopupTimer, clearSensorReconnectTimer]);
 
   useEffect(() => {
-    if (hazardControlState.sensorGateState === 'approved_nearest' && popupSnapshot) {
-      clearPopupTimer();
-      closePopupState();
+    clearLightControlRepeatTimer();
+    sendLightControlCommand(hazardControlState.lightCommand, hazardControlState.popupReason);
+
+    if (hazardControlState.lightCommand !== 'on') {
+      return;
     }
 
-    sendLightControlCommand(hazardControlState.lightCommand, hazardControlState.popupReason);
+    lightControlRepeatTimerRef.current = window.setInterval(() => {
+      if (!mountedRef.current) return;
+      sendLightControlCommand('on', hazardControlState.popupReason, { force: true });
+    }, LIGHT_CONTROL_KEEPALIVE_MS);
+
+    return () => {
+      clearLightControlRepeatTimer();
+    };
   }, [
-    clearPopupTimer,
-    closePopupState,
+    clearLightControlRepeatTimer,
     hazardControlState.lightCommand,
     hazardControlState.popupReason,
     hazardControlState.sensorGateState,
-    popupSnapshot,
     sendLightControlCommand,
   ]);
 

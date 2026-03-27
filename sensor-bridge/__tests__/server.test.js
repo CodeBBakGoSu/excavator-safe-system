@@ -240,7 +240,7 @@ describe('createLightControlBridge', () => {
     );
   });
 
-  it('deduplicates repeated commands but still forwards state changes immediately', async () => {
+  it('deduplicates identical payload replays but still forwards refreshed keepalive commands', async () => {
     const writes = [];
     const createConnection = vi.fn(() => ({
       once(event, handler) {
@@ -271,7 +271,12 @@ describe('createLightControlBridge', () => {
     await bridge.relay({
       type: 'light_control',
       command: 'on',
-      timestamp: '2026-03-27T10:00:01+09:00',
+      timestamp: '2026-03-27T10:00:00+09:00',
+    });
+    await bridge.relay({
+      type: 'light_control',
+      command: 'on',
+      timestamp: '2026-03-27T10:00:03+09:00',
     });
     await bridge.relay({
       type: 'light_control',
@@ -279,8 +284,10 @@ describe('createLightControlBridge', () => {
       timestamp: '2026-03-27T10:00:02+09:00',
     });
 
-    expect(writes).toHaveLength(2);
-    expect(writes[1]).toContain('"command":"off"');
+    expect(writes).toHaveLength(3);
+    expect(writes[1]).toContain('"command":"on"');
+    expect(writes[1]).toContain('"timestamp":"2026-03-27T10:00:03+09:00"');
+    expect(writes[2]).toContain('"command":"off"');
   });
 
   it('rejects invalid control payloads without opening a tcp socket', async () => {
